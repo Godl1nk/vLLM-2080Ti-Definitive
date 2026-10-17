@@ -93,6 +93,9 @@ cd vLLM-2080Ti-Definitive
 更新脚本会保留本地虚拟环境、依赖缓存、日志、结果以及 `profiles/local`，比较本地
 `VERSION` 与最新 Release，下载对应源码归档，并在更新完成后询问是否立即运行
 `build.sh`。
+默认从 [Godl1nk 分支仓库](https://github.com/Godl1nk/vLLM-2080Ti-Definitive)
+获取 Release 和源码归档；修改需要在该仓库发布为更新版本的 GitHub Release
+才会被更新脚本获取。
 
 3. 启动和管理服务：
 

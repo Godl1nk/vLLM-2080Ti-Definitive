@@ -101,6 +101,9 @@ The update helper preserves local environments, dependency caches, logs,
 results, and `profiles/local`. It compares `VERSION` with the latest release,
 downloads the matching source archive, and offers to run `build.sh` after the
 refresh.
+By default, releases and source archives come from the
+[Godl1nk fork](https://github.com/Godl1nk/vLLM-2080Ti-Definitive).
+Changes must be published as a newer GitHub Release there to be picked up.
 
 3. Start and manage the service:
 
