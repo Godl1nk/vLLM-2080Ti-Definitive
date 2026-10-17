@@ -820,6 +820,41 @@ def split_decodes_and_prefills(
     ):
         return num_reqs, 0, num_tokens, 0
 
+    if 0 < num_reqs <= 16 and treat_short_extends_as_decodes:
+        # Small speculative batches cost more to dispatch through CPU Torch
+        # reductions than to inspect directly. Read CPU offsets once; keep
+        # the existing vectorized path for larger batches and explicit
+        # is_prefilling masks.
+        offsets = query_start_loc.tolist()
+        query_lengths = [end - start for start, end in zip(offsets, offsets[1:])]
+        first_query_len = query_lengths[0]
+        if first_query_len > decode_threshold:
+            return 0, num_reqs, 0, num_tokens
+        if require_uniform:
+            if all(length in (0, first_query_len) for length in query_lengths):
+                return num_reqs, 0, num_tokens, 0
+            first_prefill = next(
+                i for i, length in enumerate(query_lengths) if length != first_query_len
+            )
+        else:
+            first_prefill = next(
+                (
+                    i
+                    for i, length in enumerate(query_lengths)
+                    if length > decode_threshold
+                ),
+                num_reqs,
+            )
+        if first_prefill == num_reqs:
+            return num_reqs, 0, num_tokens, 0
+        num_decode_tokens = offsets[first_prefill]
+        return (
+            first_prefill,
+            num_reqs - first_prefill,
+            num_decode_tokens,
+            num_tokens - num_decode_tokens,
+        )
+
     query_lens = query_start_loc[1:] - query_start_loc[:-1]
     if query_lens[0].item() > decode_threshold:
         # first request is not decode, so no decode requests
@@ -898,6 +933,8 @@ def reorder_batch_to_split_decodes_and_prefills(
         True if the batch was modified, False otherwise.
     """
     num_reqs = len(input_batch.req_ids)
+    if num_reqs <= 1:
+        return False
     num_scheduled_tokens = [
         scheduler_output.num_scheduled_tokens[id] for id in input_batch.req_ids
     ]
@@ -917,7 +954,6 @@ def reorder_batch_to_split_decodes_and_prefills(
     is_pure_prefill = ~has_context
     is_long_extend = has_context & ~is_below_threshold
     is_short_extend = has_context & is_below_threshold & ~done_prefilling
-    is_decode = has_context & is_below_threshold & done_prefilling
 
     # Desired order: decode → short_extend → long_extend → prefill
     req_regions = np.zeros(num_reqs, dtype=np.int32)  # 0 = decode by default
@@ -925,15 +961,11 @@ def reorder_batch_to_split_decodes_and_prefills(
     req_regions[is_long_extend] = 2
     req_regions[is_pure_prefill] = 3
 
-    num_decodes = int(is_decode.sum())
-    num_short_extends = int(is_short_extend.sum())
-    num_long_extends = int(is_long_extend.sum())
-    num_prefills = int(is_pure_prefill.sum())
-
+    # Count the already-classified regions in one pass instead of reducing
+    # four separate masks, and construct the target directly as int32.
     target_regions = np.repeat(
-        [0, 1, 2, 3],
-        [num_decodes, num_short_extends, num_long_extends, num_prefills],
-    ).astype(np.int32)
+        np.arange(4, dtype=np.int32), np.bincount(req_regions, minlength=4)
+    )
 
     needs_swap = req_regions != target_regions
 

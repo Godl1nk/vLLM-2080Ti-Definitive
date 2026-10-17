@@ -180,16 +180,24 @@ def _copy_tensor_tree(src: Any, dst: Any) -> None:
     if dst is None:
         return
     if isinstance(src, torch.Tensor) and isinstance(dst, torch.Tensor):
-        dst.copy_(src)
+        if src is not dst:
+            dst.copy_(src)
         return
     if dataclasses.is_dataclass(src) and not isinstance(src, type):
         src = {
             field.name: getattr(src, field.name) for field in dataclasses.fields(src)
         }
     if isinstance(src, Mapping) and isinstance(dst, Mapping):
+        # Layers in one attention group share metadata. Skip consecutive
+        # aliases only: intervening writes through another alias must retain
+        # their original ordering.
+        previous_src = previous_dst = None
         for key, dst_value in dst.items():
             if key in src:
-                _copy_tensor_tree(src[key], dst_value)
+                src_value = src[key]
+                if src_value is not previous_src or dst_value is not previous_dst:
+                    _copy_tensor_tree(src_value, dst_value)
+                    previous_src, previous_dst = src_value, dst_value
         return
     if (
         isinstance(src, Sequence)

@@ -102,7 +102,13 @@ def _copy_fullgraph_metadata(
                 f"captured=(shape={tuple(captured.shape)}, "
                 f"dtype={captured.dtype}, device={captured.device})"
             )
-        captured.copy_(runtime, non_blocking=True)
+        if runtime is not captured:
+            captured.copy_(runtime, non_blocking=True)
+        return
+
+    # Scalar leaves have no tensors or topology attributes to refresh. Parent
+    # metadata objects still validate every graph topology field below.
+    if type(captured) in (int, float, bool, str, bytes, type(None)):
         return
 
     for field in _FULLGRAPH_TOPOLOGY_FIELDS:
