@@ -119,7 +119,28 @@ def _flashqla_legacy_forward():
     if _flashqla_legacy_module is None:
         root = os.environ.get("FLASHQLA_ROOT")
         if not root:
-            raise ImportError("FLASHQLA_ROOT is required for the SM75 legacy backend")
+            # Direct `vllm serve` does not run the shell launcher. Discover
+            # the same bundled extension while preserving explicit overrides.
+            runtime_root = Path(__file__).resolve().parents[5]
+            for candidate in (
+                runtime_root / ".deps" / "FlashQLA-SM70-SM75",
+                runtime_root / "FlashQLA-SM70-SM75",
+                runtime_root.parent / "FlashQLA-SM70-SM75",
+                Path("/opt/FlashQLA-SM70-SM75"),
+            ):
+                if (candidate / "flash_qla/ops/gated_delta_rule/legacy/sm_legacy.py").is_file():
+                    root = str(candidate)
+                    os.environ.setdefault("FLASHQLA_ROOT", root)
+                    os.environ.setdefault(
+                        "TORCH_EXTENSIONS_DIR",
+                        str(candidate / ".torch_extensions_vllm_flashqla_legacy"),
+                    )
+                    break
+            if not root:
+                raise ImportError(
+                    "Set FLASHQLA_ROOT or install FlashQLA-SM70-SM75 under .deps "
+                    "for the SM75 legacy backend"
+                )
         source = (
             Path(root)
             / "flash_qla"

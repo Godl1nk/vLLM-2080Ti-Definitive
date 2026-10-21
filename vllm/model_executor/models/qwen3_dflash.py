@@ -474,7 +474,26 @@ class DFlashQwen3Model(nn.Module):
         self._hidden_norm_weight = self.hidden_norm.weight.data
 
         # KV projection weights: [num_layers * 2 * kv_size, hidden_size]
-        kv_weights = [a.qkv_proj.weight[a.q_size :] for a in layers_attn]
+        kv_weights = []
+        for attn in layers_attn:
+            projection = attn.qkv_proj
+            weight = projection.weight[attn.q_size :]
+            if weight.dtype == torch.float8_e4m3fn:
+                # Fused context GEMM bypasses the FP8 linear method. Preserve
+                # checkpoint block scales before the loader repacks for Marlin.
+                block_shape = getattr(self.quant_config, "weight_block_size", None)
+                if block_shape is None or not hasattr(projection, "weight_scale_inv"):
+                    raise ValueError("DFlash fused KV requires block-scaled FP8 weights")
+                block_n, block_k = block_shape
+                rows, cols = weight.shape
+                if attn.q_size % block_n or rows % block_n or cols % block_k:
+                    raise ValueError("DFlash FP8 KV projection must align to weight blocks")
+                scales = projection.weight_scale_inv[attn.q_size // block_n :]
+                weight = (
+                    weight.float().view(rows // block_n, block_n, cols // block_k, block_k)
+                    * scales[:, None, :, None]
+                ).reshape(rows, cols).to(self.hidden_norm.weight.dtype)
+            kv_weights.append(weight)
         self._fused_kv_weight = torch.cat(kv_weights, dim=0)
         if has_bias:
             kv_biases = [a.qkv_proj.bias[a.q_size :] for a in layers_attn]
