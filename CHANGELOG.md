@@ -2,6 +2,38 @@
 
 This changelog tracks releases of vLLM 2080 Ti Definitive Edition separately from upstream vLLM releases.
 
+## v0.2.2-post4 - 2026-10-21
+
+Fork release on top of `v0.2.2-post3`.
+
+### vLLM-style CLI serving (`vllm-server`)
+
+Adds `vllm-server`, a single-command foreground entry point that speaks vLLM
+CLI flag names — including the `vllm serve`-style positional model tag,
+`--model` (with `--model=VALUE`), `--served-model-name`, `--max-model-len`,
+`--max-num-seqs`, `--max-num-batched-tokens`, `--gpu-memory-utilization`,
+`--kv-cache-dtype` (validated fork precisions: `float16`,
+`int8_per_token_head`, `fp8`, `turboquant_k8v4`, `turboquant_4bit_nc`;
+`auto` selects `float16`), `--tensor-parallel-size`, `--pipeline-parallel-size`,
+`--chat-template`, `--host`, and `--port`. Unsupported options fail fast and
+point at `launcher.sh --help`; GGUF/ggml checkpoints are rejected with the
+HF-format conversion guidance. `./launcher.sh` accepts the same flags directly
+and keeps the daemonized service-manager flow behind `--foreground`.
+
+### FlashQLA discovery without the launcher
+
+The GDN `flashqla_legacy` backend now locates the bundled
+`FlashQLA-SM70-SM75` checkout under `.deps` (plus sibling and `/opt`
+candidates) when `FLASHQLA_ROOT` is unset, so plain `vllm serve` runs get the
+same SM75 accelerator path as launcher-managed services.
+
+### DFlash FP8 fused KV projections
+
+DFlash fused context KV now dequantizes block-scaled FP8
+`qkv_proj` weight slices before the fused-KV concat, preserving checkpoint
+block scales; misaligned blocks fail fast with an actionable error instead of
+loading corrupted projections.
+
 ## v0.2.2-post3 - 2026-10-01
 
 Patch release following `v0.2.2-post2`.
