@@ -19,6 +19,41 @@
 
 Profile 库是验证矩阵，不代表每个文件在每台机器上都能运行。只有外部审计完成启动、4K/128、32K/512、并发和图文正确性验证后，路线才会被 promote。
 
+## vLLM CLI 风格启动
+
+`vllm-server` 是一个可直接运行的入口，使用 vLLM CLI 的 flag 名称，支持 `vllm serve`
+风格的模型位置参数，并在前台启动服务；按 Ctrl+C 停止。模型必须是 HF 格式检查点目录
+（`config.json` + `*.safetensors`）。其他 launcher 参数（如 `--profile`、`--mode`、
+`--gpu-devices`）原样透传。
+
+```bash
+./vllm-server \
+  --served-model-name qwen3.8-27b \
+  --max-model-len 32768 \
+  --kv-cache-dtype float16 \
+  --gpu-memory-utilization 0.9 \
+  --host 0.0.0.0 \
+  --port 8080 \
+  /mnt/models/Qwen3.8-27B-FP8
+```
+
+支持的 vLLM 选项与映射关系：
+
+- 位置参数模型标签与 `--model` 都选择检查点（`MODEL_DIR`，`vllm serve` 风格；只接受一个模型）。
+- `--served-model-name` 设置 `SERVED_NAME`。
+- `--max-model-len`、`--max-num-seqs`、`--max-num-batched-tokens` 分别映射
+  `MAX_MODEL_LEN`、`MAX_NUM_SEQS`、`MAX_BATCHED_TOKENS`。
+- `--gpu-memory-utilization` 映射 `GPU_UTIL`（0 到 1 之间的小数）。
+- `--kv-cache-dtype` 按本运行时的 KV 精度校验：`float16`、`int8_per_token_head`、
+  `fp8`、`turboquant_k8v4`、`turboquant_4bit_nc`；`auto` 选择 `float16`。
+- `--tensor-parallel-size`、`--pipeline-parallel-size` 映射 `TP_SIZE`、`PP_SIZE`；
+  `--chat-template` 映射 `CHAT_TEMPLATE_FILE`。
+- `--host` 映射到 `SERVICE_SCOPE`：回环地址使用 local，其他地址在 LAN scope 上绑定 `0.0.0.0`。
+- `./launcher.sh` 直接接受相同 flag；它走守护态的服务管理流程，而不是前台运行。
+
+不支持的选项会立即报错，并在错误信息中给出验证通过的替代方案。GGUF/ggml 量化格式
+会被拒绝；本运行时只加载 HF 格式检查点，并使用自己的 `--quantization` 方案。
+
 ## 实验性 SSD 前缀缓存
 
 Launcher 可以启用 vLLM 内置的 `OffloadingConnector`，通过 CPU 暂存层和文件系统层将已完成的前缀 KV 块写入磁盘，不需要常驻的独立缓存进程。目录必须位于持久化存储上；重启后保持模型路径、KV 精度、块布局和并行配置一致。CPU 暂存空间占用主机内存，不会增加 GPU KV 容量。每次启动前，launcher 会读取目标模型和本地草稿模型的全部文件，按内容摘要选择独立的磁盘命名空间。因此在原路径替换权重后不会读到旧 KV；代价是启动时额外完整读取一次检查点。旧命名空间需要手动清理以回收空间。切换到不兼容的运行时仍需清理缓存。磁盘缓存要求检查点位于本地目录；launcher 启动和服务运行期间不要修改检查点文件。

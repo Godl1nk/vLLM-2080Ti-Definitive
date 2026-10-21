@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+show_usage() {
+  cat <<'EOF'
+vLLM 2080 Ti Definitive Edition - single-command serving entry point
+
+Usage: ./vllm-server [vllm options] MODEL_DIR
+
+Runs the fork's validated SM75 vLLM runtime in the foreground; Ctrl+C stops
+the service. MODEL_DIR is an HF-format checkpoint directory
+(config.json + *.safetensors), given as the last argument (vLLM serve style)
+or via --model. GGUF/ggml quantized checkpoints are not supported; convert
+the weights first.
+
+vLLM options (launched through the validated route below):
+  --model PATH                     checkpoint directory (as an alternative to
+                                   the positional MODEL_DIR)
+  --served-model-name NAME         API model name (default: directory name)
+  --max-model-len N                context length in tokens
+  --max-num-seqs N                 max concurrent sequences
+  --max-num-batched-tokens N       prefill token budget per step
+  --gpu-memory-utilization F       GPU KV/CUDA-graph budget, e.g. 0.9
+  --kv-cache-dtype DTYPE           float16, int8_per_token_head, fp8,
+                                   turboquant_k8v4, or turboquant_4bit_nc
+                                   (auto maps to float16)
+  --tensor-parallel-size N         GPUs per engine (default: every detected GPU)
+  --pipeline-parallel-size N       engine shards
+  --chat-template FILE             custom chat template file
+  --host ADDR                      only loopback (127.0.0.1/localhost) or all
+                                   interfaces (0.0.0.0) can be bound
+  --port N                         API port
+
+Other launcher keys pass through unchanged (--profile, --mode, --print-config,
+--set/--unset). See ./launcher.sh --help for the full key list and the
+daemonized service-manager flow.
+
+Example:
+  ./vllm-server \
+    --served-model-name qwen3.8-27b \
+    --max-model-len 32768 \
+    --kv-cache-dtype float16 \
+    --gpu-memory-utilization 0.9 \
+    --host 0.0.0.0 \
+    --port 8080 \
+    /mnt/models/Qwen3.8-27B-FP8
+EOF
+}
+
+if (($# == 0)); then
+  show_usage
+  exit 1
+fi
+
+found_model=0
+local_arg=""
+for local_arg in "$@"; do
+  case "$local_arg" in
+    -h|--help|help)
+      show_usage
+      exit 0
+      ;;
+    --model|--model=*)
+      found_model=1
+      ;;
+    -*)
+      ;;
+    *)
+      found_model=1
+      ;;
+  esac
+done
+if (( found_model == 0 )); then
+  show_usage >&2
+  echo "ERROR: MODEL_DIR is required (--model PATH, or the positional model tag)." >&2
+  exit 1
+fi
+
+# FOREGROUND comes from the environment so it always reads as a flag, never as
+# an accidental value grabber for a following option.
+exec env FOREGROUND=1 "$SCRIPT_DIR/launcher.sh" "$@"

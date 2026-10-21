@@ -17,11 +17,13 @@ profile 和验证资料。它基于上游 vLLM；再发布派生版本时必须�
 
 ![单请求实时测速演示](docs/assets/vllmspeed_dflash.gif)
 
-当前 0.2.x 基线：`v0.2.2-post3`
+当前版本：`v0.2.2-post4`
+上游 0.2.x 基线：`v0.2.2-post3`
 上游基线：`b23433088b`（`v0.29.1rc0-33`）
 
-分支：[`main`](https://github.com/weicj/vLLM-2080Ti-Definitive/tree/main)
-版本参考：[v0.2.2-post3](https://github.com/weicj/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post3)
+分支：[`main`](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/tree/main)
+本版发布：[v0.2.2-post4](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post4)
+上游基线发布：[v0.2.2-post3](https://github.com/weicj/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post3)
 版本记录：[CHANGELOG.md](CHANGELOG.md)
 
 ## 💡 为什么用 RTX 2080 Ti 做 LLM 推理？
@@ -118,8 +120,11 @@ MODE=fast GPU_DEVICES=1,5 TP_SIZE=2 \
 NON_INTERACTIVE=1 ./launcher.sh
 ```
 
-使用 `./launcher.sh --print-config` 预览路线。自动化部署见
-[非交互启动说明](docs/non-interactive-launch.zh-CN.md)。
+使用 `./launcher.sh --print-config` 预览路线。需要单命令、前台启动的体验时，可直接
+运行同一验证运行时，选项使用 vLLM CLI 名称：
+`./vllm-server --max-model-len 32768 --host 0.0.0.0 --port 8080 权重目录`
+（支持 `--served-model-name`、`--kv-cache-dtype`、`--gpu-memory-utilization` 等，
+详见[非交互启动说明](docs/non-interactive-launch.zh-CN.md)）。
 
 ## 🧭 Profile 与推荐路线
 

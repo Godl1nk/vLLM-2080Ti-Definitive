@@ -310,6 +310,22 @@ normalize_bool() {
   esac
 }
 
+host_scope_note() {
+  printf 'INFO: --host %s is served on the LAN scope; the launcher binds only loopback (local) or all interfaces (lan, 0.0.0.0).\n' "$1" >&2
+}
+
+map_host_address_to_scope() {
+  local address=${1,,}
+  case "$address" in
+    0.0.0.0|::|[*]) echo lan ;;
+    127.0.0.1|::1|localhost) echo local ;;
+    *)
+      host_scope_note "$1"
+      echo lan
+      ;;
+  esac
+}
+
 read_profile_value() {
   local file=$1
   local key=$2
@@ -893,6 +909,7 @@ NON_INTERACTIVE_CONFIG_KEYS=(
   MAMBA_CACHE_MODE
   ENFORCE_EAGER
   NO_ASYNC_SCHEDULING
+  FOREGROUND
   CUSTOM_ALL_REDUCE_MODE
   DISABLE_LOG_STATS
   VLLM_SM75_SPEC_SYNC_MODE
@@ -930,6 +947,7 @@ NON_INTERACTIVE_BOOLEAN_KEYS=(
   ENFORCE_EAGER
   NO_ASYNC_SCHEDULING
   DISABLE_HYBRID_KV_CACHE_MANAGER
+  FOREGROUND
   DISABLE_CUSTOM_ALL_REDUCE
   DISABLE_LOG_STATS
   VLLM_ALLOW_LONG_MAX_MODEL_LEN
@@ -1110,6 +1128,146 @@ parse_launcher_args() {
     arg=$1
     shift
     case "$arg" in
+      # vLLM CLI style aliases; see the notes in show_help.
+      --model|--model=*)
+        if [[ "$arg" == --model=* ]]; then
+          value=${arg#--model=}
+        else
+          (($#)) || die "Option $arg expects a checkpoint path."
+          value=$1
+          shift
+        fi
+        set_config_override MODEL_DIR "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+      --served-model-name|--served-model-name=*)
+        if [[ "$arg" == *=* ]]; then
+          value=${arg#*=}
+        else
+          (($#)) || die "Option $arg expects a served model name."
+          value=$1
+          shift
+        fi
+        set_config_override SERVED_NAME "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+      --host|--host=*)
+        if [[ "$arg" == *=* ]]; then
+          value=${arg#*=}
+        else
+          (($#)) || die "--host expects an address."
+          value=$1
+          shift
+        fi
+        set_config_override SERVICE_SCOPE "$(map_host_address_to_scope "$value")" cli
+        NON_INTERACTIVE=1
+        ;;
+      --max-model-len|--max-model-len=*)
+        if [[ "$arg" == *=* ]]; then
+          value=${arg#*=}
+        else
+          (($#)) || die "Option $arg expects a context length in tokens."
+          value=$1
+          shift
+        fi
+        [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "Option $arg expects a positive integer context length."
+        set_config_override MAX_MODEL_LEN "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+      --max-num-seqs|--max-num-seqs=*)
+        if [[ "$arg" == *=* ]]; then
+          value=${arg#*=}
+        else
+          (($#)) || die "Option $arg expects a sequence count."
+          value=$1
+          shift
+        fi
+        [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "Option $arg expects a positive integer sequence count."
+        set_config_override MAX_NUM_SEQS "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+      --max-num-batched-tokens|--max-num-batched-tokens=*)
+        if [[ "$arg" == *=* ]]; then
+          value=${arg#*=}
+        else
+          (($#)) || die "Option $arg expects a batched token count."
+          value=$1
+          shift
+        fi
+        [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "Option $arg expects a positive integer batched token count."
+        set_config_override MAX_BATCHED_TOKENS "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+      --gpu-memory-utilization|--gpu-memory-utilization=*)
+        if [[ "$arg" == *=* ]]; then
+          value=${arg#*=}
+        else
+          (($#)) || die "Option $arg expects a GPU memory fraction."
+          value=$1
+          shift
+        fi
+        if ! awk -v value="$value" 'BEGIN { exit !(value ~ /^0([.][0-9]+)?$/ && value > 0 && value < 1) }'; then
+          die "Option $arg expects a fraction between 0 and 1, for example 0.9."
+        fi
+        set_config_override GPU_UTIL "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+      --kv-cache-dtype|--kv-cache-dtype=*)
+        if [[ "$arg" == *=* ]]; then
+          value=${arg#*=}
+        else
+          (($#)) || die "Option $arg expects a KV cache dtype."
+          value=$1
+          shift
+        fi
+        case "${value,,}" in
+          auto)
+            value=float16
+            ;;
+          float16|int8_per_token_head|fp8|turboquant_k8v4|turboquant_4bit_nc) ;;
+          *)
+            die "Option $arg expects one of the validated KV precisions: float16, int8_per_token_head, fp8, turboquant_k8v4, turboquant_4bit_nc."
+            ;;
+        esac
+        set_config_override KV_CACHE_DTYPE "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+      --tensor-parallel-size|--tensor-parallel-size=*)
+        if [[ "$arg" == *=* ]]; then
+          value=${arg#*=}
+        else
+          (($#)) || die "Option $arg expects a tensor parallel size."
+          value=$1
+          shift
+        fi
+        [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "Option $arg expects a positive integer tensor parallel size."
+        set_config_override TP_SIZE "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+      --pipeline-parallel-size|--pipeline-parallel-size=*)
+        if [[ "$arg" == *=* ]]; then
+          value=${arg#*=}
+        else
+          (($#)) || die "Option $arg expects a pipeline parallel size."
+          value=$1
+          shift
+        fi
+        [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "Option $arg expects a positive integer pipeline parallel size."
+        set_config_override PP_SIZE "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+      --chat-template|--chat-template=*)
+        if [[ "$arg" == *=* ]]; then
+          value=${arg#*=}
+        else
+          (($#)) || die "Option $arg expects a chat template file."
+          value=$1
+          shift
+        fi
+        set_config_override CHAT_TEMPLATE_FILE "$value" cli
+        NON_INTERACTIVE=1
+        ;;
+
       --non-interactive)
         NON_INTERACTIVE=1
         ;;
@@ -1158,7 +1316,12 @@ parse_launcher_args() {
         NON_INTERACTIVE=1
         ;;
       *)
-        die "Unknown positional argument: $arg"
+        if ! config_key_has_override MODEL_DIR; then
+          set_config_override MODEL_DIR "$arg" cli
+          NON_INTERACTIVE=1
+        else
+          die "Unknown positional argument: $arg (only one model tag is accepted, vLLM serve style)"
+        fi
         ;;
     esac
   done
@@ -2796,6 +2959,12 @@ Notes:
   - DFlash repo IDs auto-probe Hugging Face official vs mirror at launch.
     Use HF_ENDPOINT or HF_DOWNLOAD_ROUTE_MODE=official|mirror to pin a route.
   - Non-interactive precedence is CLI > ENV > PROFILE > default.
+  - vLLM CLI style flags are supported: --model or one positional model tag
+    (vLLM serve style), --served-model-name, --max-model-len, --max-num-seqs,
+    --max-num-batched-tokens, --gpu-memory-utilization, --kv-cache-dtype,
+    --tensor-parallel-size, --pipeline-parallel-size, --chat-template, and
+    --host/--port. ./vllm-server runs the same route in the foreground.
+    GGUF/ggml checkpoints are not supported (HF checkpoints only).
   - --print-config prints the final launch summary and exits without starting.
 EOF
   echo
@@ -5730,6 +5899,34 @@ launch_server() {
     echo "============================================================"
   } > "$log_file"
 
+  if [[ "${FOREGROUND:-0}" == "1" ]]; then
+    echo
+    echo "Starting server in the foreground (Ctrl+C stops it)."
+    echo "  Log: $log_file"
+    echo "  Mode: $MODE"
+    echo "  Served name: $SERVED_NAME"
+    echo "  Model: $MODEL_DIR"
+    echo "  Bind: $host_arg:$PORT"
+    echo
+    local fg_server_pid fg_rc=0
+    "${server_env[@]}" "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}" \
+      > >(tee -a "$log_file") 2>&1 &
+    fg_server_pid=$!
+    echo "$fg_server_pid" > "$pid_file"
+    echo "launch-$$-$STAMP-$RANDOM$RANDOM" > "${pid_file}.token"
+    trap 'kill -INT "$fg_server_pid" 2>/dev/null || true' INT
+    trap 'kill -TERM "$fg_server_pid" 2>/dev/null || true' TERM
+    set +e
+    wait "$fg_server_pid"
+    fg_rc=$?
+    set -e
+    trap - INT TERM
+    # Absorb the final child status; the server may outlive the interrupted wait.
+    wait "$fg_server_pid" 2>/dev/null || true
+    rm -f "$pid_file" "${pid_file}.token"
+    return "$fg_rc"
+  fi
+
   echo
   echo "Starting server..."
   echo "  Log: $log_file"
@@ -6015,6 +6212,15 @@ prepare_runtime_defaults() {
     return 1
   fi
   if [[ ! -d "$MODEL_DIR" ]]; then
+    if [[ -f "$MODEL_DIR" && "${MODEL_DIR##*.}" =~ ^(gguf|ggml|bin)$ ]]; then
+      {
+        echo "ERROR: $MODEL_DIR is a GGUF/ggml quantized checkpoint."
+        echo "  This runtime serves HF-format checkpoints (config.json + *.safetensors);"
+        echo "  convert the weights to HF format first. Quantized weights must use a"
+        echo "  vLLM --quantization scheme such as fp8/awq/gptq."
+      } >&2
+      return 1
+    fi
     echo "ERROR: Model directory does not exist: $MODEL_DIR" >&2
     return 1
   fi

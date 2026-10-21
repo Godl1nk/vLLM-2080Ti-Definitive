@@ -19,11 +19,13 @@ For usage feedback, feature requests, and community discussion, join the
 
 ![Live single-request throughput demo](docs/assets/vllmspeed_dflash.gif)
 
-Current 0.2.x baseline: `v0.2.2-post3`
+Current release: `v0.2.2-post4`
+Upstream 0.2.x baseline: `v0.2.2-post3`
 Upstream baseline: `b23433088b` (`v0.29.1rc0-33`)
 
-Branch: [`main`](https://github.com/weicj/vLLM-2080Ti-Definitive/tree/main)
-Release reference: [v0.2.2-post3](https://github.com/weicj/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post3)
+Branch: [`main`](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/tree/main)
+Release: [v0.2.2-post4](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post4)
+Upstream baseline release: [v0.2.2-post3](https://github.com/weicj/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post3)
 Release history: [CHANGELOG.md](CHANGELOG.md)
 
 ## 💡 Why RTX 2080 Ti For LLM Inference?
@@ -129,6 +131,10 @@ NON_INTERACTIVE=1 ./launcher.sh
 
 Use `./launcher.sh --print-config` to preview a route. See the
 [non-interactive launch guide](docs/non-interactive-launch.md) for automation.
+For a single-command foreground experience, run the same validated runtime with
+`./vllm-server --max-model-len 32768 --host 0.0.0.0 --port 8080 CHECKPOINT`
+(vLLM CLI flag names; supports `--served-model-name`, `--kv-cache-dtype`,
+`--gpu-memory-utilization`, and more — see the non-interactive launch guide).
 
 ## 🧭 Profiles
 

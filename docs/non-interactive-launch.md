@@ -30,6 +30,47 @@ fits every machine. Capacity and performance are promoted only after the
 external audit records startup, 4K/128, 32K/512, concurrency, and image
 correctness evidence.
 
+## vLLM CLI Style Serving
+
+`vllm-server` is a runnable entry point that uses vLLM CLI flag names, mirrors
+the `vllm serve` positional model tag, and serves in the foreground; press
+Ctrl+C to stop. The model is an HF-format checkpoint directory
+(`config.json` + `*.safetensors`). Any launcher option (for example `--profile`,
+`--mode`, or `--gpu-devices`) passes through unchanged.
+
+```bash
+./vllm-server \
+  --served-model-name qwen3.8-27b \
+  --max-model-len 32768 \
+  --kv-cache-dtype float16 \
+  --gpu-memory-utilization 0.9 \
+  --host 0.0.0.0 \
+  --port 8080 \
+  /mnt/models/Qwen3.8-27B-FP8
+```
+
+Supported vLLM options and mappings:
+
+- The positional model tag and `--model` both select the checkpoint
+  (`MODEL_DIR`, `vllm serve` style; only one model is accepted).
+- `--served-model-name` sets `SERVED_NAME`.
+- `--max-model-len`, `--max-num-seqs`, and `--max-num-batched-tokens` map to
+  `MAX_MODEL_LEN`, `MAX_NUM_SEQS`, and `MAX_BATCHED_TOKENS`.
+- `--gpu-memory-utilization` maps to `GPU_UTIL` (a fraction between 0 and 1).
+- `--kv-cache-dtype` validates against the fork's KV precisions:
+  `float16`, `int8_per_token_head`, `fp8`, `turboquant_k8v4`,
+  `turboquant_4bit_nc`; `auto` selects `float16`.
+- `--tensor-parallel-size` and `--pipeline-parallel-size` map to `TP_SIZE` and
+  `PP_SIZE`; `--chat-template` maps to `CHAT_TEMPLATE_FILE`.
+- `--host` maps to `SERVICE_SCOPE`: loopback addresses use local scope,
+  everything else binds `0.0.0.0` on the LAN scope.
+- `./launcher.sh` accepts the same flags directly; it starts the daemonized
+  service-manager flow instead of a foreground server.
+
+Unsupported options fail fast with the validated alternative in the message.
+GGUF/ggml checkpoints are rejected; this runtime loads HF-format checkpoints
+and its own `--quantization` schemes.
+
 ## Experimental SSD Prefix Cache
 
 The launcher can opt into vLLM's built-in `OffloadingConnector` with a CPU
