@@ -44,6 +44,8 @@ Usage: ./vllm-server [options] MODEL_DIR
 Launches the validated SM75 vLLM runtime as the process itself (no helper
 scripts); Ctrl+C stops it. MODEL_DIR is an HF-format checkpoint directory
 (config.json + *.safetensors). GGUF/ggml checkpoints are not supported.
+MODEL_DIR is the trailing positional argument; use --model to place it
+anywhere on the command line.
 
 With no route flags, the validated profile is selected from the detected
 GPUs, model family, and weight quantization (e.g. FP8 Qwen3.8 on 2x2080Ti ->
@@ -75,7 +77,7 @@ def parse_args(argv):
     options = {}
     provided = set()
     passthrough = []
-    positional = []
+    bare = []
     profile = ""
     print_config = False
     index = 0
@@ -121,18 +123,23 @@ def parse_args(argv):
             if arg.startswith("--"):
                 provided.add(arg.split("=", 1)[0])
         else:
-            positional.append(arg)
+            bare.append((len(passthrough), arg))
+            passthrough.append(arg)
         index += 1
 
-    if positional:
-        if len(positional) > 1:
-            fail("only one MODEL_DIR may be given.")
-        if "model" in options:
-            fail("MODEL_DIR must be given either positionally or via --model.")
-        options["model"] = positional[0]
     if "model" not in options:
-        usage()
-        fail("MODEL_DIR is required (--model PATH or the positional model tag).")
+        directories = [entry for entry in bare if Path(entry[1]).is_dir()]
+        if len(directories) > 1:
+            fail("only one MODEL_DIR may be given.")
+        if directories:
+            chosen = directories[0]
+        elif bare:
+            chosen = bare[-1]
+        else:
+            usage()
+            fail("MODEL_DIR is required (--model PATH or the trailing positional model directory).")
+        del passthrough[chosen[0]]
+        options["model"] = chosen[1]
     return options, provided, passthrough, profile, print_config
 
 

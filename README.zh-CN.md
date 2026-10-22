@@ -17,12 +17,12 @@ profile 和验证资料。它基于上游 vLLM；再发布派生版本时必须�
 
 ![单请求实时测速演示](docs/assets/vllmspeed_dflash.gif)
 
-当前版本：`v0.2.2-post8`
+当前版本：`v0.2.2-post9`
 上游 0.2.x 基线：`v0.2.2-post3`
 上游基线：`b23433088b`（`v0.29.1rc0-33`）
 
 分支：[`main`](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/tree/main)
-本版发布：[v0.2.2-post8](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post8)
+本版发布：[v0.2.2-post9](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post9)
 上游基线发布：[v0.2.2-post3](https://github.com/weicj/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post3)
 版本记录：[CHANGELOG.md](CHANGELOG.md)
 

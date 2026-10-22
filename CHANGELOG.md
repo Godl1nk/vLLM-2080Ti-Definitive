@@ -2,6 +2,20 @@
 
 This changelog tracks releases of vLLM 2080 Ti Definitive Edition separately from upstream vLLM releases.
 
+## v0.2.2-post9 - 2026-10-22
+
+Patch release on top of `v0.2.2-post8`; installs the same standalone
+`vllm-server` with corrected argument parsing.
+
+### Unknown flag values stay out of MODEL_DIR detection
+
+`vllm-server` now distinguishes the checkpoint from values of options it does
+not parse (for example `--api-key secret` or `--tool-call-parser hermes`).
+Existing directories are treated as the model candidate, other bare tokens are
+forwarded to vLLM with their flags, and `--model PATH` accepts bare values
+anywhere. A single positional checkpoint continues to work in vLLM
+`serve`-style ordering.
+
 ## v0.2.2-post8 - 2026-10-22
 
 Patch release on top of `v0.2.2-post7`.

@@ -163,6 +163,28 @@ class EntryPointTest(unittest.TestCase):
         self.assertTrue(print_config)
         self.assertEqual(passthrough, [])
 
+    def test_parse_forwards_unknown_flag_values(self):
+        options, _, passthrough, _, _ = module.parse_args(
+            ["--api-key", "secret-key", str(self.vision)]
+        )
+        self.assertEqual(options["model"], str(self.vision))
+        self.assertEqual(passthrough, ["--api-key", "secret-key"])
+        options, _, passthrough, _, _ = module.parse_args(
+            ["--model", str(self.vision), "--api-key", "secret-key"]
+        )
+        self.assertEqual(options["model"], str(self.vision))
+        self.assertEqual(passthrough, ["--api-key", "secret-key"])
+        options, _, passthrough, _, _ = module.parse_args(
+            [str(self.vision), "--api-key", "secret-key"]
+        )
+        self.assertEqual(options["model"], str(self.vision))
+        self.assertEqual(passthrough, ["--api-key", "secret-key"])
+        options, _, passthrough, _, _ = module.parse_args(
+            ["--tool-call-parser", "hermes", str(self.vision)]
+        )
+        self.assertEqual(options["model"], str(self.vision))
+        self.assertEqual(passthrough, ["--tool-call-parser", "hermes"])
+
     def test_parse_rejects_missing_model(self):
         with self.assertRaises(SystemExit):
             module.parse_args(["--host", "127.0.0.1"])
