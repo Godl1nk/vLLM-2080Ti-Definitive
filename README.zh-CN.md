@@ -17,12 +17,12 @@ profile 和验证资料。它基于上游 vLLM；再发布派生版本时必须�
 
 ![单请求实时测速演示](docs/assets/vllmspeed_dflash.gif)
 
-当前版本：`v0.2.2-post6`
+当前版本：`v0.2.2-post7`
 上游 0.2.x 基线：`v0.2.2-post3`
 上游基线：`b23433088b`（`v0.29.1rc0-33`）
 
 分支：[`main`](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/tree/main)
-本版发布：[v0.2.2-post6](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post6)
+本版发布：[v0.2.2-post7](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post7)
 上游基线发布：[v0.2.2-post3](https://github.com/weicj/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post3)
 版本记录：[CHANGELOG.md](CHANGELOG.md)
 
@@ -125,6 +125,9 @@ NON_INTERACTIVE=1 ./launcher.sh
 `./vllm-server --max-model-len 32768 --host 0.0.0.0 --port 8080 权重目录`
 （支持 `--served-model-name`、`--kv-cache-dtype`、`--gpu-memory-utilization` 等，
 详见[非交互启动说明](docs/non-interactive-launch.zh-CN.md)）。
+只给权重目录时，`vllm-server` 会依据检测到的 GPU、模型族与权重量化自动选择已验证
+profile（双 2080 Ti + Qwen3.8 FP8 → 186K 上下文、FP8 KV、MTP4、TP2）；显式 flag
+仍然优先。
 
 ## 🧭 Profile 与推荐路线
 

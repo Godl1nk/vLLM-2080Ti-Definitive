@@ -2,6 +2,27 @@
 
 This changelog tracks releases of vLLM 2080 Ti Definitive Edition separately from upstream vLLM releases.
 
+## v0.2.2-post7 - 2026-10-22
+
+Patch release on top of `v0.2.2-post6`.
+
+### Zero-flag route selection for `vllm-server`
+
+`./vllm-server MODEL_DIR` now resolves the validated route profile from the
+detected GPUs, model family, and weight quantization instead of falling back to
+generic defaults. An FP8 Qwen3.8 checkpoint on two RTX 2080 Ti selects
+`mtp4-fp8kv-1x186K-text-image` (186K context, FP8 KV, MTP4, TP2); 4-bit
+checkpoints select the matching compressed-tensors route. Explicit flags,
+`--profile`, and `PROFILE` still take precedence; DFlash routes (which require
+a draft model) and YaRN routes are never auto-selected, and unsupported
+hardware keeps the built-in defaults.
+
+Quantization detection now reads `quantization_config` from `config.json`
+(including compressed-tensors 8-bit → `fp8`), so checkpoints whose directory
+name carries no precision tag resolve correctly. An empty derived speculative
+config is now a hard error instead of producing an empty
+`--speculative-config` argument.
+
 ## v0.2.2-post6 - 2026-10-22
 
 Patch release on top of `v0.2.2-post5`.
