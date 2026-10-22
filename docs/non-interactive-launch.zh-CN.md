@@ -21,16 +21,17 @@ Profile 库是验证矩阵，不代表每个文件在每台机器上都能运行
 
 ## vLLM CLI 风格启动
 
-`vllm-server` 是一个可直接运行的入口，使用 vLLM CLI 的 flag 名称，支持 `vllm serve`
-风格的模型位置参数，并在前台启动服务；按 Ctrl+C 停止。模型必须是 HF 格式检查点目录
-（`config.json` + `*.safetensors`）。其他 launcher 参数（如 `--profile`、`--mode`、
-`--gpu-devices`）原样透传。
+`vllm-server` 是仓库内的独立前台入口：它是一个 Python 程序，自行解析路线、准备运行时
+环境，并从 `.venv` `exec` vLLM API server。服务进程会替换入口进程，因此 Ctrl+C 和
+supervisor 信号直达 vLLM，日志就是 vLLM 自身的日志，进程树中不会残留脚本或 shell。
+模型必须是 HF 格式检查点目录（`config.json` + `*.safetensors`）。`vllm-server` 不认
+识的选项会原样转发给 vLLM。
 
-未指定 route profile 或 route 参数时，launcher 会根据检测到的 GPU、模型族和权重量化
-自动选择已验证的 profile。例如双 RTX 2080 Ti 上的 FP8 Qwen3.8 会命中
+未指定 route profile 或 route 参数时，`vllm-server` 会根据检测到的 GPU、模型族和权重
+量化自动选择已验证的 profile。例如双 RTX 2080 Ti 上的 FP8 Qwen3.8 会命中
 `2x2080Ti/qwen27b/w8a16/mtp4-fp8kv-1x186K-text-image.env`（186K 上下文、FP8 KV、
 MTP4、TP2）。显式 flag 和 `--profile` 优先。自动选择依赖 `nvidia-smi`；无法识别的
-硬件回退到内置默认值。
+硬件回退到内置默认值；DFlash 路线需要独立草稿模型，不会被自动选择。
 
 ```bash
 ./vllm-server \
@@ -43,22 +44,24 @@ MTP4、TP2）。显式 flag 和 `--profile` 优先。自动选择依赖 `nvidia-
   /mnt/models/Qwen3.8-27B-FP8
 ```
 
-支持的 vLLM 选项与映射关系：
+`vllm-server` 自行解析的选项：
 
-- 位置参数模型标签与 `--model` 都选择检查点（`MODEL_DIR`，`vllm serve` 风格；只接受一个模型）。
-- `--served-model-name` 设置 `SERVED_NAME`。
-- `--max-model-len`、`--max-num-seqs`、`--max-num-batched-tokens` 分别映射
-  `MAX_MODEL_LEN`、`MAX_NUM_SEQS`、`MAX_BATCHED_TOKENS`。
-- `--gpu-memory-utilization` 映射 `GPU_UTIL`（0 到 1 之间的小数）。
-- `--kv-cache-dtype` 按本运行时的 KV 精度校验：`float16`、`int8_per_token_head`、
-  `fp8`、`turboquant_k8v4`、`turboquant_4bit_nc`；`auto` 选择 `float16`。
-- `--tensor-parallel-size`、`--pipeline-parallel-size` 映射 `TP_SIZE`、`PP_SIZE`；
-  `--chat-template` 映射 `CHAT_TEMPLATE_FILE`。
-- `--host` 映射到 `SERVICE_SCOPE`：回环地址使用 local，其他地址在 LAN scope 上绑定 `0.0.0.0`。
-- `./launcher.sh` 直接接受相同 flag；它走守护态的服务管理流程，而不是前台运行。
+- 位置参数模型标签与 `--model` 都选择检查点（只接受一个模型）。
+- `--served-model-name` 设置 API 模型名（默认：目录名）。
+- `--host` 只接受回环地址或 `0.0.0.0`；其他值会提示并回退到 `0.0.0.0`。
+- `--port`、`--max-model-len`、`--max-num-seqs`、`--max-num-batched-tokens`、
+  `--gpu-memory-utilization`、`--chat-template`。
+- `--kv-cache-dtype` 支持 `float16`、`int8_per_token_head`、`fp8`、
+  `turboquant_k8v4`、`turboquant_4bit_nc`。
+- `--tensor-parallel-size`、`--pipeline-parallel-size`。
+- `--profile` 指定显式 route profile；`--print-config` 打印最终 profile、GPU 集合和命令。
 
-不支持的选项会立即报错，并在错误信息中给出验证通过的替代方案。GGUF/ggml 量化格式
-会被拒绝；本运行时只加载 HF 格式检查点，并使用自己的 `--quantization` 方案。
+其余选项（如 `--api-key`、`--enable-auto-tool-choice`、`--tool-call-parser`、
+`--reasoning-config`）原样转发给 vLLM。`vllm-server` 不再调用 `launcher.sh`；
+launcher 仅保留交互式与守护态服务管理。
+
+不支持的输入会立即报错。GGUF/ggml 量化格式会被拒绝；本运行时只加载 HF 格式检查点，
+并使用自己的 `--quantization` 方案。
 
 ## 实验性 SSD 前缀缓存
 

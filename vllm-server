@@ -1,88 +1,634 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+"""llama-server style single-command entry point for the SM75 vLLM runtime."""
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
 
-show_usage() {
-  cat <<'EOF'
-vLLM 2080 Ti Definitive Edition - single-command serving entry point
+ROOT = Path(__file__).resolve().parent
+RUNTIME_ROOT = Path(os.environ.get("RUNTIME_ROOT", ROOT))
+PROFILE_DIR = Path(os.environ.get("PROFILE_DIR", ROOT / "profiles"))
 
-Usage: ./vllm-server [vllm options] MODEL_DIR
-
-Runs the fork's validated SM75 vLLM runtime in the foreground; Ctrl+C stops
-the service. MODEL_DIR is an HF-format checkpoint directory
-(config.json + *.safetensors), given as the last argument (vLLM serve style)
-or via --model. GGUF/ggml quantized checkpoints are not supported; convert
-the weights first.
-
-With only a checkpoint path, the launcher auto-selects the validated route
-profile for the detected GPUs, model family, and weight quantization
-(2x2080Ti + Qwen3.8 FP8 -> mtp4-fp8kv-1x186K-text-image: 186K context, FP8 KV,
-MTP4, TP2). Explicit flags always override the selected profile.
-
-vLLM options (launched through the validated route below):
-  --model PATH                     checkpoint directory (as an alternative to
-                                   the positional MODEL_DIR)
-  --served-model-name NAME         API model name (default: directory name)
-  --max-model-len N                context length in tokens
-  --max-num-seqs N                 max concurrent sequences
-  --max-num-batched-tokens N       prefill token budget per step
-  --gpu-memory-utilization F       GPU KV/CUDA-graph budget, e.g. 0.9
-  --kv-cache-dtype DTYPE           float16, int8_per_token_head, fp8,
-                                   turboquant_k8v4, or turboquant_4bit_nc
-                                   (auto maps to float16)
-  --tensor-parallel-size N         GPUs per engine (default: every detected GPU)
-  --pipeline-parallel-size N       engine shards
-  --chat-template FILE             custom chat template file
-  --host ADDR                      only loopback (127.0.0.1/localhost) or all
-                                   interfaces (0.0.0.0) can be bound
-  --port N                         API port
-
-Other launcher keys pass through unchanged (--profile, --mode, --print-config,
---set/--unset). See ./launcher.sh --help for the full key list and the
-daemonized service-manager flow.
-
-Example:
-  ./vllm-server \
-    --served-model-name qwen3.8-27b \
-    --max-model-len 32768 \
-    --kv-cache-dtype float16 \
-    --gpu-memory-utilization 0.9 \
-    --host 0.0.0.0 \
-    --port 8080 \
-    /mnt/models/Qwen3.8-27B-FP8
-EOF
+SCALAR_FLAGS = {
+    "--model": "model",
+    "--served-model-name": "served_model_name",
+    "--host": "host",
+    "--port": "port",
+    "--max-model-len": "max_model_len",
+    "--max-num-seqs": "max_num_seqs",
+    "--max-num-batched-tokens": "max_num_batched_tokens",
+    "--gpu-memory-utilization": "gpu_memory_utilization",
+    "--kv-cache-dtype": "kv_cache_dtype",
+    "--tensor-parallel-size": "tensor_parallel_size",
+    "--pipeline-parallel-size": "pipeline_parallel_size",
+    "--chat-template": "chat_template",
 }
 
-if (($# == 0)); then
-  show_usage
-  exit 1
-fi
 
-found_model=0
-local_arg=""
-for local_arg in "$@"; do
-  case "$local_arg" in
-    -h|--help|help)
-      show_usage
-      exit 0
-      ;;
-    --model|--model=*)
-      found_model=1
-      ;;
-    -*)
-      ;;
-    *)
-      found_model=1
-      ;;
-  esac
-done
-if (( found_model == 0 )); then
-  show_usage >&2
-  echo "ERROR: MODEL_DIR is required (--model PATH, or the positional model tag)." >&2
-  exit 1
-fi
 
-# FOREGROUND comes from the environment so it always reads as a flag, never as
-# an accidental value grabber for a following option.
-exec env FOREGROUND=1 "$SCRIPT_DIR/launcher.sh" "$@"
+def fail(message):
+    print(f"ERROR: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def usage():
+    print(
+        """vLLM 2080 Ti Definitive Edition - single-command serving entry point
+
+Usage: ./vllm-server [options] MODEL_DIR
+
+Launches the validated SM75 vLLM runtime as the process itself (no helper
+scripts); Ctrl+C stops it. MODEL_DIR is an HF-format checkpoint directory
+(config.json + *.safetensors). GGUF/ggml checkpoints are not supported.
+
+With no route flags, the validated profile is selected from the detected
+GPUs, model family, and weight quantization (e.g. FP8 Qwen3.8 on 2x2080Ti ->
+186K context, FP8 KV, MTP4, TP2). Explicit options always override it.
+
+Common options:
+  --model PATH                     checkpoint directory (alternative to the
+                                   positional MODEL_DIR)
+  --served-model-name NAME         API model name (default: directory name)
+  --host ADDR                      loopback or 0.0.0.0
+  --port N                         API port (default: 8000)
+  --max-model-len N
+  --max-num-seqs N
+  --max-num-batched-tokens N
+  --gpu-memory-utilization F
+  --kv-cache-dtype DTYPE           float16, fp8, int8_per_token_head,
+                                   turboquant_k8v4, turboquant_4bit_nc
+  --tensor-parallel-size N
+  --pipeline-parallel-size N
+  --chat-template FILE
+  --profile ROUTE.env              explicit route profile
+  --print-config                   print the resolved command and exit
+
+Any other option is passed through to the vLLM API server unchanged."""
+    )
+
+
+def parse_args(argv):
+    options = {}
+    provided = set()
+    passthrough = []
+    positional = []
+    profile = ""
+    print_config = False
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg in ("-h", "--help"):
+            usage()
+            sys.exit(0)
+        if arg == "--print-config":
+            print_config = True
+            index += 1
+            continue
+        if arg == "--profile" or arg.startswith("--profile="):
+            if "=" in arg:
+                profile = arg.split("=", 1)[1]
+            else:
+                index += 1
+                if index >= len(argv):
+                    fail("--profile expects a route profile path.")
+                profile = argv[index]
+            index += 1
+            continue
+        matched = False
+        for flag, key in SCALAR_FLAGS.items():
+            if arg == flag:
+                index += 1
+                if index >= len(argv):
+                    fail(f"{flag} expects a value.")
+                options[key] = argv[index]
+                provided.add(flag)
+                matched = True
+                break
+            if arg.startswith(flag + "="):
+                options[key] = arg.split("=", 1)[1]
+                provided.add(flag)
+                matched = True
+                break
+        if matched:
+            index += 1
+            continue
+        if arg.startswith("-"):
+            passthrough.append(arg)
+            if arg.startswith("--"):
+                provided.add(arg.split("=", 1)[0])
+        else:
+            positional.append(arg)
+        index += 1
+
+    if positional:
+        if len(positional) > 1:
+            fail("only one MODEL_DIR may be given.")
+        if "model" in options:
+            fail("MODEL_DIR must be given either positionally or via --model.")
+        options["model"] = positional[0]
+    if "model" not in options:
+        usage()
+        fail("MODEL_DIR is required (--model PATH or the positional model tag).")
+    return options, provided, passthrough, profile, print_config
+
+
+def read_profile(path):
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        values[key] = value.strip().strip("'\"")
+    return values
+
+
+def model_config(model_dir):
+    try:
+        with open(Path(model_dir) / "config.json", encoding="utf-8") as stream:
+            return json.load(stream)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def guess_family(model_dir, config):
+    identifiers = [str(config.get("model_type", ""))]
+    identifiers.extend(str(value) for value in (config.get("architectures") or []))
+    text_config = config.get("text_config")
+    if isinstance(text_config, dict):
+        identifiers.append(str(text_config.get("model_type", "")))
+    normalized = " ".join(value.lower().replace("-", "_") for value in identifiers)
+    if "qwen4" in normalized:
+        return "qwen4"
+    if "qwen3_5_moe" in normalized or "qwen3_5moe" in normalized:
+        return "qwen35moe"
+    if "qwen3_5" in normalized or "qwen3.5" in normalized:
+        return "qwen35"
+    if "gemma4" in normalized:
+        return "gemma4"
+    if "qwen" in normalized:
+        return "qwen"
+    lowered = str(model_dir).lower()
+    if any(token in lowered for token in ("qwen4", "flash-next")):
+        return "qwen4"
+    if "moe" in lowered:
+        return "qwen35moe"
+    if any(token in lowered for token in ("qwen3.5", "qwen3_5", "qwen35", "qwen3.6")):
+        return "qwen35"
+    if "gemma" in lowered:
+        return "gemma4"
+    return "qwen"
+
+
+def guess_quantization(model_dir, config):
+    lowered = str(model_dir).lower()
+    if "fp8" in lowered:
+        return "fp8"
+    if "gptq" in lowered:
+        return "gptq_marlin"
+    if "awq" in lowered:
+        return "awq_marlin"
+    if "quark" in lowered:
+        return "quark"
+    quantization = config.get("quantization_config")
+    if isinstance(quantization, dict):
+        method = str(quantization.get("quant_method", "")).strip().lower()
+        if method in ("compressed-tensors", "compressed_tensors"):
+            groups = quantization.get("config_groups") or {}
+            for group in groups.values() if isinstance(groups, dict) else []:
+                if not isinstance(group, dict):
+                    continue
+                for scheme_name in ("weights", "input_activations"):
+                    scheme = group.get(scheme_name)
+                    if isinstance(scheme, dict) and scheme.get("num_bits") == 8:
+                        return "fp8"
+            return "compressed-tensors"
+        if method == "awq":
+            return "awq_marlin"
+        if method == "gptq":
+            return "gptq_marlin"
+        if method:
+            return method
+    for key in ("compression_config", "quantization"):
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return ""
+
+
+def is_multimodal(config):
+    if isinstance(config.get("vision_config"), dict):
+        return True
+    if isinstance(config.get("vision_tower"), dict):
+        return True
+    if any(key in config for key in ("image_token_id", "video_token_id", "image_token_index")):
+        return True
+    architectures = " ".join(str(value).lower() for value in (config.get("architectures") or []))
+    return any(marker in architectures for marker in ("vl", "vision", "omni"))
+
+
+def list_gpus():
+    try:
+        output = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    gpus = []
+    for line in output.stdout.splitlines():
+        parts = line.split(",", 1)
+        if len(parts) != 2:
+            continue
+        name = parts[1].strip()
+        try:
+            index = int(parts[0].strip())
+        except ValueError:
+            continue
+        gpus.append((index, name))
+    return gpus
+
+
+def selected_devices(gpus):
+    configured = os.environ.get("GPU_DEVICES", "") or os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    configured = configured.replace(" ", "")
+    if configured:
+        return configured
+    preferred = [str(index) for index, name in gpus if "2080" in name.lower() and "ti" in name.lower()][:2]
+    if preferred:
+        return ",".join(preferred)
+    if gpus:
+        return ",".join(str(index) for index, _ in gpus)
+    return "0,1"
+
+
+def hardware_dir(gpus, devices):
+    names = []
+    indices = []
+    for part in devices.split(","):
+        try:
+            indices.append(int(part))
+        except ValueError:
+            return None
+    by_index = dict(gpus)
+    for index in indices:
+        if index not in by_index:
+            return None
+        names.append(by_index[index].lower())
+    if len(indices) == 2 and all("2080" in name and "ti" in name for name in names):
+        return "2x2080Ti"
+    if len(indices) == 2 and all("t10" in name for name in names):
+        return "2xT10"
+    if len(indices) == 4 and all("t10" in name for name in names):
+        return "4xT10"
+    return None
+
+
+def resolve_profile(explicit, devices, gpus, family, quantization, multimodal):
+    if explicit:
+        candidate = Path(explicit)
+        if not candidate.is_file():
+            candidate = PROFILE_DIR / explicit
+        if not candidate.is_file() and not explicit.endswith(".env"):
+            candidate = PROFILE_DIR / f"{explicit}.env"
+        if not candidate.is_file():
+            fail(f"route profile not found: {explicit}")
+        return candidate
+    hardware = hardware_dir(gpus, devices)
+    if not hardware:
+        return None
+    base = PROFILE_DIR / hardware
+    if not base.is_dir():
+        return None
+    message_type = "text+image" if multimodal else "text-only"
+    best = None
+    best_rank = None
+    best_len = -1
+    for candidate in sorted(base.rglob("*.env")):
+        values = read_profile(candidate)
+        if values.get("MODEL_FAMILY") != family:
+            continue
+        if values.get("QUANTIZATION", "") != quantization:
+            continue
+        try:
+            length = int(values.get("MAX_MODEL_LEN", ""))
+        except ValueError:
+            continue
+        if values.get("SPECULATIVE_METHOD") == "dflash":
+            continue
+        rank = 0
+        if values.get("MESSAGE_TYPE") != message_type:
+            rank += 100
+        if values.get("ENABLE_YARN") == "1" or candidate.name.startswith("yarn-"):
+            rank += 10
+        if values.get("KV_CACHE_DTYPE") not in ("", "fp16", "fp8"):
+            rank += 1
+        if best is None or rank < best_rank or (rank == best_rank and length > best_len):
+            best = candidate
+            best_rank = rank
+            best_len = length
+    return best
+
+
+def resolve_gpu_library_path(cuda_home):
+    parts = []
+    if cuda_home:
+        parts.extend([str(cuda_home / "lib64"), str(cuda_home / "lib")])
+    return ":".join(parts)
+
+
+def find_cuda_home():
+    configured = os.environ.get("CUDA_HOME", "")
+    candidates = [configured] if configured else []
+    candidates.extend(["/usr/local/cuda", "/usr/local/cuda-13.0", "/opt/cuda", "/usr/local/cuda-12.8"])
+    for candidate in candidates:
+        if candidate and (Path(candidate) / "bin" / "nvcc").is_file():
+            return Path(candidate)
+    return None
+
+
+def find_flashqla():
+    configured = os.environ.get("FLASHQLA_ROOT", "")
+    candidates = [configured] if configured else []
+    candidates.extend([
+        RUNTIME_ROOT / ".deps" / "FlashQLA-SM70-SM75",
+        ROOT / ".deps" / "FlashQLA-SM70-SM75",
+        RUNTIME_ROOT / "FlashQLA-SM70-SM75",
+        ROOT / "FlashQLA-SM70-SM75",
+        RUNTIME_ROOT.parent / "FlashQLA-SM70-SM75",
+        "/opt/FlashQLA-SM70-SM75",
+    ])
+    for candidate in candidates:
+        if candidate and Path(candidate, "flash_qla").is_dir():
+            return Path(candidate)
+    return None
+
+
+def find_host_compiler():
+    for major in ("12", "14"):
+        cc = Path(f"/usr/bin/gcc-{major}")
+        cxx = Path(f"/usr/bin/g++-{major}")
+        if cc.is_file() and cxx.is_file():
+            return cc, cxx
+    return None
+
+
+def apply_kv_env(env, kv_dtype, max_model_len, max_num_seqs):
+    if kv_dtype == "int8_per_token_head":
+        env["VLLM_INT8KV_FA_PREFILL"] = env.get("VLLM_INT8KV_FA_PREFILL", "1")
+        env["VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT"] = env.get("VLLM_INT8KV_FA_FIRST_CHUNK_DEQUANT", "0")
+        env["VLLM_INT8KV_FA_CONTINUATION_DEQUANT"] = env.get("VLLM_INT8KV_FA_CONTINUATION_DEQUANT", "1")
+        env["VLLM_INT8KV_FA_CASCADE_DEQUANT"] = env.get("VLLM_INT8KV_FA_CASCADE_DEQUANT", "1")
+        env["VLLM_INT8KV_FA_CASCADE_TILE_TOKENS"] = env.get("VLLM_INT8KV_FA_CASCADE_TILE_TOKENS", "65536")
+    if kv_dtype.startswith("turboquant_"):
+        reserve = "65536"
+        try:
+            if int(max_model_len) >= 240000 and int(max_num_seqs) <= 1:
+                reserve = "262144"
+        except ValueError:
+            pass
+        env["VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL"] = env.get("VLLM_TURBOQUANT_USE_FLASHINFER_PREFILL", "1")
+        env["VLLM_TURBOQUANT_FLASHINFER_BACKEND"] = env.get("VLLM_TURBOQUANT_FLASHINFER_BACKEND", "fa2")
+        env["VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS"] = env.get(
+            "VLLM_TURBOQUANT_CONTINUATION_WORKSPACE_RESERVE_TOKENS", reserve
+        )
+        env["VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE"] = env.get("VLLM_TURBOQUANT_CUDAGRAPH_SPEC_DECODE_SAFE", "1")
+        env["VLLM_TURBOQUANT_SPEC_DECODE_CHUNK_SIZE"] = env.get("VLLM_TURBOQUANT_SPEC_DECODE_CHUNK_SIZE", "1")
+        env["VLLM_TURBOQUANT_CONTINUATION_SDPA_Q_CHUNK"] = env.get("VLLM_TURBOQUANT_CONTINUATION_SDPA_Q_CHUNK", "512")
+        env["VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS"] = env.get(
+            "VLLM_TURBOQUANT_CONTINUATION_SDPA_MAX_QK_CELLS", "16777216"
+        )
+        env["VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH"] = env.get(
+            "VLLM_TURBOQUANT_SPEC_CONTINUATION_DECODE_FASTPATH", "1"
+        )
+
+
+def build_env(devices, kv_dtype, max_model_len, max_num_seqs, cuda_home, flashqla):
+    env = dict(os.environ)
+    env["CUDA_VISIBLE_DEVICES"] = devices
+    env["CUDA_DEVICE_ORDER"] = env.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    env["TORCH_CUDA_ARCH_LIST"] = env.get("TORCH_CUDA_ARCH_LIST", "7.5")
+    env["VLLM_DISABLE_TILELANG"] = env.get("VLLM_DISABLE_TILELANG", "1")
+    env["VLLM_SM75_SPEC_SYNC_MODE"] = env.get("VLLM_SM75_SPEC_SYNC_MODE", "safe")
+    env["VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH"] = env.get("VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH", "1")
+    env["PYTHONSAFEPATH"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
+    env["FLASHINFER_ENABLE_AOT"] = env.get("FLASHINFER_ENABLE_AOT", "1")
+    env["FLASHINFER_WORKSPACE_BASE"] = env.get("FLASHINFER_WORKSPACE_BASE", str(ROOT))
+    env["TORCHINDUCTOR_CACHE_DIR"] = env.get("TORCHINDUCTOR_CACHE_DIR", str(ROOT / "torchinductor-cache"))
+    env["TRITON_CACHE_DIR"] = env.get("TRITON_CACHE_DIR", str(ROOT / "triton-cache"))
+    if not env.get("CC") and not env.get("CXX"):
+        compilers = find_host_compiler()
+        if compilers:
+            env["CC"], env["CXX"] = (str(path) for path in compilers)
+    if not env.get("CUDAHOSTCXX") and env.get("CXX"):
+        env["CUDAHOSTCXX"] = env["CXX"]
+    apply_kv_env(env, kv_dtype, max_model_len, max_num_seqs)
+    paths = [str(RUNTIME_ROOT / ".venv" / "bin")]
+    if cuda_home:
+        env["CUDA_HOME"] = str(cuda_home)
+        env["CUDA_PATH"] = str(cuda_home)
+        env["CUDACXX"] = str(cuda_home / "bin" / "nvcc")
+        paths.append(str(cuda_home / "bin"))
+    library_path = resolve_gpu_library_path(cuda_home)
+    if library_path:
+        env["LD_LIBRARY_PATH"] = f"{library_path}:{env['LD_LIBRARY_PATH']}" if env.get("LD_LIBRARY_PATH") else library_path
+    pythonpath = [str(RUNTIME_ROOT)]
+    if flashqla:
+        env["FLASHQLA_ROOT"] = str(flashqla)
+        pythonpath.append(str(flashqla))
+        env["TORCH_EXTENSIONS_DIR"] = env.get(
+            "TORCH_EXTENSIONS_DIR", str(flashqla / ".torch_extensions_vllm_flashqla_legacy")
+        )
+    if env.get("PYTHONPATH"):
+        pythonpath.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = ":".join(pythonpath)
+    if env.get("PATH"):
+        paths.append(env["PATH"])
+    env["PATH"] = ":".join(paths)
+    return env
+
+
+def cudagraph_capture_sizes(tokens, sequences):
+    return ",".join(str((tokens + 1) * step) for step in range(1, max(sequences, 1) + 1))
+
+
+def resolve_defaults(options, values, quantization, gpu_count):
+    max_model_len = options.get("max_model_len") or values.get("MAX_MODEL_LEN", "")
+    if not max_model_len:
+        max_model_len = "102400" if quantization == "fp8" else "131072"
+    gpu_util = options.get("gpu_memory_utilization") or values.get("GPU_UTIL", "")
+    if not gpu_util:
+        gpu_util = "0.92" if quantization == "fp8" else "0.90"
+    return {
+        "served_name": options.get("served_model_name") or Path(options["model"]).name,
+        "max_model_len": str(max_model_len),
+        "gpu_util": gpu_util,
+        "max_num_seqs": str(options.get("max_num_seqs") or values.get("MAX_NUM_SEQS", "1")),
+        "kv_dtype": options.get("kv_cache_dtype") or values.get("KV_CACHE_DTYPE", ""),
+        "tensor_parallel": options.get("tensor_parallel_size") or values.get("TP_SIZE") or str(gpu_count),
+        "pipeline_parallel": options.get("pipeline_parallel_size") or values.get("PP_SIZE", ""),
+        "max_batched": str(options.get("max_num_batched_tokens") or values.get("MAX_BATCHED_TOKENS", "2048")),
+    }
+
+
+def build_argv(options, provided, passthrough, profile_path, family, quantization, multimodal):
+    values = read_profile(profile_path) if profile_path else {}
+    devices = options.get("devices", "")
+    gpu_count = len([part for part in devices.split(",") if part.strip()])
+    defaults = resolve_defaults(options, values, quantization, gpu_count)
+    served_name = defaults["served_name"]
+    max_model_len = defaults["max_model_len"]
+    gpu_util = defaults["gpu_util"]
+    max_num_seqs = defaults["max_num_seqs"]
+    kv_dtype = defaults["kv_dtype"]
+    tensor_parallel = defaults["tensor_parallel"]
+    pipeline_parallel = defaults["pipeline_parallel"]
+    max_batched = defaults["max_batched"]
+    method = values.get("SPECULATIVE_METHOD", "none")
+    try:
+        spec_tokens = int(values.get("SPECULATIVE_TOKENS", "0") or 0)
+    except ValueError:
+        spec_tokens = 0
+    if method == "dflash" and "--speculative-config" not in provided:
+        fail("DFlash routes require --speculative-config with a draft model.")
+    if method != "mtp":
+        spec_tokens = 0
+    message_type = values.get("MESSAGE_TYPE", "text-only")
+
+    generated = [
+        ("--host", options.get("host", "127.0.0.1")),
+        ("--port", options.get("port", "8000")),
+        ("--model", options["model"]),
+        ("--served-model-name", served_name),
+        ("--dtype", "half"),
+        ("--tensor-parallel-size", tensor_parallel),
+        ("--generation-config", "auto"),
+        ("--gpu-memory-utilization", gpu_util),
+        ("--max-model-len", str(max_model_len)),
+        ("--enable-chunked-prefill", None),
+        ("--max-num-seqs", str(max_num_seqs)),
+        ("--max-num-batched-tokens", str(max_batched)),
+    ]
+    if quantization:
+        generated.append(("--quantization", quantization))
+    if pipeline_parallel:
+        generated.append(("--pipeline-parallel-size", pipeline_parallel))
+    if kv_dtype:
+        generated.append(("--kv-cache-dtype", kv_dtype))
+    if family.startswith("qwen") and message_type == "text+image" and multimodal:
+        generated.append(("--limit-mm-per-prompt", '{"image":64,"video":0,"audio":0}'))
+    if message_type == "text-only":
+        generated.append(("--language-model-only", None))
+        generated.append(("--skip-mm-profiling", None))
+    if family.startswith("qwen"):
+        generated.append(("--mamba-cache-mode", "align"))
+        generated.append(("--additional-config", '{"gdn_prefill_backend":"flashqla_legacy"}'))
+    generated.append(("--enable-prefix-caching", None))
+    generated.append(("--enable-prompt-tokens-details", None))
+    generated.append(("--disable-log-stats", None))
+    if int(max_num_seqs) > 1:
+        generated.append(("--prefill-batch-barrier", None))
+    if family.startswith("qwen"):
+        generated.append(("--reasoning-parser", "qwen3"))
+    if spec_tokens > 0:
+        generated.append(("--speculative-config", json.dumps({"method": "mtp", "num_speculative_tokens": spec_tokens}, separators=(",", ":"))))
+        sizes = cudagraph_capture_sizes(spec_tokens, int(max_num_seqs))
+        generated.append(("--compilation-config", json.dumps({
+            "cudagraph_mode": "FULL_AND_PIECEWISE",
+            "cudagraph_capture_sizes": [int(value) for value in sizes.split(",")],
+            "max_cudagraph_capture_size": (spec_tokens + 1) * int(max_num_seqs),
+        }, separators=(",", ":"))))
+    else:
+        generated.append(("--compilation-config", json.dumps({
+            "cudagraph_mode": "FULL_AND_PIECEWISE",
+            "cudagraph_capture_sizes": [1],
+            "max_cudagraph_capture_size": 1,
+        }, separators=(",", ":"))))
+    if options.get("chat_template"):
+        generated.append(("--chat-template", options["chat_template"]))
+
+    argv = []
+    for flag, value in generated:
+        if flag in provided:
+            continue
+        argv.append(flag)
+        if value is not None:
+            argv.append(str(value))
+    argv.extend(passthrough)
+    return argv
+
+
+def main(argv):
+    options, provided, passthrough, explicit_profile, print_config = parse_args(argv)
+    model_dir = options["model"]
+    if not Path(model_dir).is_dir():
+        fail(f"model directory does not exist: {model_dir}")
+    if not (Path(model_dir) / "config.json").is_file():
+        fail(f"not an HF checkpoint (config.json missing): {model_dir}")
+
+    config = model_config(model_dir)
+    family = guess_family(model_dir, config)
+    quantization = guess_quantization(model_dir, config)
+    multimodal = is_multimodal(config)
+    gpus = list_gpus()
+    devices = selected_devices(gpus)
+    options["devices"] = devices
+    explicit_profile = explicit_profile or os.environ.get("PROFILE", "")
+    profile_path = resolve_profile(explicit_profile, devices, gpus, family, quantization, multimodal)
+    values = read_profile(profile_path) if profile_path else {}
+
+    host = options.get("host", "127.0.0.1")
+    if host not in ("127.0.0.1", "localhost", "0.0.0.0", "::", "::1", "[::]"):
+        print(
+            "INFO: only loopback or all interfaces can be bound; using 0.0.0.0.",
+            file=sys.stderr,
+        )
+        host = "0.0.0.0"
+        options["host"] = host
+    port = options.get("port", "8000")
+    if not str(port).isdigit() or not 1 <= int(port) <= 65535:
+        fail("--port must be an integer between 1 and 65535.")
+
+    vllm_argv = build_argv(options, provided, passthrough, profile_path, family, quantization, multimodal)
+    python = RUNTIME_ROOT / ".venv" / "bin" / "python"
+    cuda_home = find_cuda_home()
+    flashqla = find_flashqla()
+    gpu_count = len([part for part in devices.split(",") if part.strip()])
+    defaults = resolve_defaults(options, values, quantization, gpu_count)
+    env = build_env(
+        devices,
+        defaults["kv_dtype"],
+        defaults["max_model_len"],
+        defaults["max_num_seqs"],
+        cuda_home,
+        flashqla,
+    )
+    if values.get("SPECULATIVE_METHOD") == "dflash":
+        env["VLLM_USE_V2_MODEL_RUNNER"] = env.get("VLLM_USE_V2_MODEL_RUNNER", "1")
+    command = [str(python), "-m", "vllm.entrypoints.openai.api_server", *vllm_argv]
+
+    if print_config:
+        print(f"profile={profile_path if profile_path else 'none'}")
+        print(f"gpus={devices}")
+        print(shlex.join(command))
+        return 0
+
+    if not python.is_file():
+        fail(f".venv python not found at {python}; run ./build.sh first or set RUNTIME_ROOT.")
+    os.chdir(ROOT)
+    try:
+        os.execvpe(str(python), command, env)
+    except OSError as error:
+        fail(f"unable to start vLLM: {error}")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

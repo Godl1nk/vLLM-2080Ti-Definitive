@@ -1,0 +1,2 @@
+*.sh text eol=lf
+vllm-server text eol=lf

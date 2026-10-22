@@ -32,19 +32,22 @@ correctness evidence.
 
 ## vLLM CLI Style Serving
 
-`vllm-server` is a runnable entry point that uses vLLM CLI flag names, mirrors
-the `vllm serve` positional model tag, and serves in the foreground; press
-Ctrl+C to stop. The model is an HF-format checkpoint directory
-(`config.json` + `*.safetensors`). Any launcher option (for example `--profile`,
-`--mode`, or `--gpu-devices`) passes through unchanged.
+`vllm-server` is a self-contained foreground entry point: a Python program in
+this repository that resolves the route, prepares the runtime environment, and
+`exec`s the vLLM API server from `.venv`. The server replaces the entry process,
+so Ctrl+C and supervisor signals reach vLLM directly, logs are vLLM's own, and
+no helper script or shell remains in the process tree. The model is an
+HF-format checkpoint directory (`config.json` + `*.safetensors`). Options that
+`vllm-server` does not recognize are forwarded to vLLM unchanged.
 
-When no route profile or route flags are given, the launcher auto-selects the
+When no route profile or route flags are given, `vllm-server` auto-selects the
 validated profile for the detected GPUs, model family, and weight quantization.
 For example, an FP8 Qwen3.8 checkpoint on two RTX 2080 Ti resolves to
 `2x2080Ti/qwen27b/w8a16/mtp4-fp8kv-1x186K-text-image.env` (186K context, FP8
 KV, MTP4, TP2). Explicit flags and `--profile` take precedence. Auto-selection
 requires `nvidia-smi`; unsupported hardware falls back to the built-in
-defaults.
+defaults, and DFlash routes are never auto-selected because they need a separate
+draft checkpoint.
 
 ```bash
 ./vllm-server \
@@ -57,27 +60,28 @@ defaults.
   /mnt/models/Qwen3.8-27B-FP8
 ```
 
-Supported vLLM options and mappings:
+Options parsed by `vllm-server`:
 
-- The positional model tag and `--model` both select the checkpoint
-  (`MODEL_DIR`, `vllm serve` style; only one model is accepted).
-- `--served-model-name` sets `SERVED_NAME`.
-- `--max-model-len`, `--max-num-seqs`, and `--max-num-batched-tokens` map to
-  `MAX_MODEL_LEN`, `MAX_NUM_SEQS`, and `MAX_BATCHED_TOKENS`.
-- `--gpu-memory-utilization` maps to `GPU_UTIL` (a fraction between 0 and 1).
-- `--kv-cache-dtype` validates against the fork's KV precisions:
-  `float16`, `int8_per_token_head`, `fp8`, `turboquant_k8v4`,
-  `turboquant_4bit_nc`; `auto` selects `float16`.
-- `--tensor-parallel-size` and `--pipeline-parallel-size` map to `TP_SIZE` and
-  `PP_SIZE`; `--chat-template` maps to `CHAT_TEMPLATE_FILE`.
-- `--host` maps to `SERVICE_SCOPE`: loopback addresses use local scope,
-  everything else binds `0.0.0.0` on the LAN scope.
-- `./launcher.sh` accepts the same flags directly; it starts the daemonized
-  service-manager flow instead of a foreground server.
+- The positional model tag and `--model` both select the checkpoint (only one
+  model is accepted).
+- `--served-model-name` sets the API model name (default: directory name).
+- `--host` accepts a loopback address or `0.0.0.0`; other values fall back to
+  `0.0.0.0` with a notice.
+- `--port`, `--max-model-len`, `--max-num-seqs`, `--max-num-batched-tokens`,
+  `--gpu-memory-utilization`, `--chat-template`.
+- `--kv-cache-dtype` accepts `float16`, `int8_per_token_head`, `fp8`,
+  `turboquant_k8v4`, and `turboquant_4bit_nc`.
+- `--tensor-parallel-size` and `--pipeline-parallel-size`.
+- `--profile` selects an explicit route profile; `--print-config` prints the
+  resolved profile, GPU set, and final command.
 
-Unsupported options fail fast with the validated alternative in the message.
-GGUF/ggml checkpoints are rejected; this runtime loads HF-format checkpoints
-and its own `--quantization` schemes.
+Everything else, such as `--api-key`, `--enable-auto-tool-choice`,
+`--tool-call-parser`, or `--reasoning-config`, is passed through to vLLM
+unchanged. `vllm-server` never invokes `launcher.sh`; the launcher remains the
+interactive and daemonized service manager.
+
+Unsupported inputs fail fast. GGUF/ggml checkpoints are rejected; this runtime
+loads HF-format checkpoints and its own `--quantization` schemes.
 
 ## Experimental SSD Prefix Cache
 
