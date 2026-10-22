@@ -5945,29 +5945,13 @@ launch_server() {
   if [[ "${FOREGROUND:-0}" == "1" ]]; then
     echo
     echo "Starting server in the foreground (Ctrl+C stops it)."
-    echo "  Log: $log_file"
+    echo "  Startup header: $log_file"
     echo "  Mode: $MODE"
     echo "  Served name: $SERVED_NAME"
     echo "  Model: $MODEL_DIR"
     echo "  Bind: $host_arg:$PORT"
     echo
-    local fg_server_pid fg_rc=0
-    "${server_env[@]}" "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}" \
-      > >(tee -a "$log_file") 2>&1 &
-    fg_server_pid=$!
-    echo "$fg_server_pid" > "$pid_file"
-    echo "launch-$$-$STAMP-$RANDOM$RANDOM" > "${pid_file}.token"
-    trap 'kill -INT "$fg_server_pid" 2>/dev/null || true' INT
-    trap 'kill -TERM "$fg_server_pid" 2>/dev/null || true' TERM
-    set +e
-    wait "$fg_server_pid"
-    fg_rc=$?
-    set -e
-    trap - INT TERM
-    # Absorb the final child status; the server may outlive the interrupted wait.
-    wait "$fg_server_pid" 2>/dev/null || true
-    rm -f "$pid_file" "${pid_file}.token"
-    return "$fg_rc"
+    exec "${server_env[@]}" "$RUNTIME_ROOT/.venv/bin/python" -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}"
   fi
 
   echo
