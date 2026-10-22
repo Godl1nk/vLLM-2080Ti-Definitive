@@ -2,6 +2,28 @@
 
 This changelog tracks releases of vLLM 2080 Ti Definitive Edition separately from upstream vLLM releases.
 
+## v0.2.2-post8 - 2026-10-22
+
+Patch release on top of `v0.2.2-post7`.
+
+### `vllm-server` is the server process, not a wrapper
+
+`vllm-server` is now a standalone Python entry point. It parses the vLLM-style
+CLI, resolves the route profile, prepares the SM75 environment, and `exec`s the
+vLLM API server from `.venv`; `launcher.sh` is no longer involved, so one
+process serves and Ctrl+C, supervisor signals, and logs go directly to vLLM.
+Options it does not recognize are forwarded to vLLM unchanged, and
+`--print-config` prints the resolved profile and the exact command.
+
+### Runtime parity with the launcher
+
+The entry point ports the post7 auto-selection (compressed-tensors 8-bit →
+`fp8`, text-only vs text+image ranking, DFlash/YaRN exclusion) and the
+launcher's SM75 environment setup: host compiler discovery, FlashQLA and
+kernel caches, and int8/turboquant KV tuning variables. A new
+`tests/standalone_tests/vllm_server_entrypoint.py` locks profile selection,
+generated flags, explicit overrides, and passthrough behavior.
+
 ## v0.2.2-post7 - 2026-10-22
 
 Patch release on top of `v0.2.2-post6`.

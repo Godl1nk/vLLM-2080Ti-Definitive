@@ -19,12 +19,12 @@ For usage feedback, feature requests, and community discussion, join the
 
 ![Live single-request throughput demo](docs/assets/vllmspeed_dflash.gif)
 
-Current release: `v0.2.2-post7`
+Current release: `v0.2.2-post8`
 Upstream 0.2.x baseline: `v0.2.2-post3`
 Upstream baseline: `b23433088b` (`v0.29.1rc0-33`)
 
 Branch: [`main`](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/tree/main)
-Release: [v0.2.2-post7](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post7)
+Release: [v0.2.2-post8](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post8)
 Upstream baseline release: [v0.2.2-post3](https://github.com/weicj/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post3)
 Release history: [CHANGELOG.md](CHANGELOG.md)
 
@@ -138,6 +138,9 @@ For a single-command foreground experience, run the same validated runtime with
 With only the checkpoint path, `vllm-server` auto-selects the validated profile
 for the detected GPUs, model family, and weight quantization (2x2080Ti Qwen3.8
 FP8 → 186K context, FP8 KV, MTP4, TP2); explicit flags still win.
+`vllm-server` is self-contained: it is a Python entry point that `exec`s the
+vLLM API server directly and never invokes `launcher.sh`, so there is one
+process to supervise and its logs are the server's own.
 
 ## 🧭 Profiles
 
