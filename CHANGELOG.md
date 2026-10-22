@@ -2,6 +2,32 @@
 
 This changelog tracks releases of vLLM 2080 Ti Definitive Edition separately from upstream vLLM releases.
 
+## v0.2.2-post5 - 2026-10-22
+
+Patch release on top of `v0.2.2-post4`.
+
+### Full vLLM CLI flag surface through `vllm-server`
+
+`vllm-server`/`launcher.sh` now accept the complete flag set used by the
+Qwen3.8-27B SM75 launch recipe: `--dtype`, `--device-ids`,
+`--kv-cache-memory-bytes`, `--mm-processor-kwargs`, `--reasoning-config`,
+`--chat-template-content-format`, `--override-generation-config`,
+`--cpu-offload-gb`, `--disable-uvicorn-access-log`, `--speculative-config`,
+and `--enable-chunked-prefill`, plus `--limit-mm-per-prompt`,
+`--additional-config`, and `--compilation-config` passthrough aliases.
+`--kv-cache-dtype` also accepts `fp8_e4m3` and `fp8_e5m2`.
+
+### Foreground `vllm-server` never prompts
+
+`vllm-server` exports `FOREGROUND=1`; the launcher now treats that as a direct
+launch on a TTY instead of entering the interactive service-manager menu, so
+`./vllm-server MODEL_DIR` behaves like `llama-server`.
+
+### SPECULATIVE_CONFIG conflict fix
+
+Derived `MTP_K`/`SPECULATIVE_TOKENS` values no longer trigger a false
+"must not be mixed" error when `--speculative-config` is used on its own.
+
 ## v0.2.2-post4 - 2026-10-21
 
 Fork release on top of `v0.2.2-post3`.

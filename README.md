@@ -19,12 +19,12 @@ For usage feedback, feature requests, and community discussion, join the
 
 ![Live single-request throughput demo](docs/assets/vllmspeed_dflash.gif)
 
-Current release: `v0.2.2-post4`
+Current release: `v0.2.2-post5`
 Upstream 0.2.x baseline: `v0.2.2-post3`
 Upstream baseline: `b23433088b` (`v0.29.1rc0-33`)
 
 Branch: [`main`](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/tree/main)
-Release: [v0.2.2-post4](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post4)
+Release: [v0.2.2-post5](https://github.com/Godl1nk/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post5)
 Upstream baseline release: [v0.2.2-post3](https://github.com/weicj/vLLM-2080Ti-Definitive/releases/tag/v0.2.2-post3)
 Release history: [CHANGELOG.md](CHANGELOG.md)
 
