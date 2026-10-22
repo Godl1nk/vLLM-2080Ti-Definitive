@@ -31,7 +31,10 @@ expect_failure() {
 reset_test_state() {
   unset MODEL_DIR SERVED_NAME MAX_MODEL_LEN MAX_NUM_SEQS MAX_BATCHED_TOKENS \
     GPU_UTIL TP_SIZE PP_SIZE CHAT_TEMPLATE_FILE SERVICE_SCOPE PORT KV_CACHE_DTYPE \
-    FOREGROUND
+    FOREGROUND DEVICE_IDS KV_CACHE_MEMORY_BYTES MM_PROCESSOR_KWARGS REASONING_CONFIG \
+    CHAT_TEMPLATE_CONTENT_FORMAT OVERRIDE_GENERATION_CONFIG CPU_OFFLOAD_GB \
+    DISABLE_UVICORN_ACCESS_LOG SPECULATIVE_CONFIG MM_LIMIT_JSON \
+    ADDITIONAL_CONFIG_JSON COMPILATION_CONFIG_JSON
   CONFIG_OVERRIDE_SOURCE=()
   CONFIG_OVERRIDE_UNSET=()
   NON_INTERACTIVE=0
@@ -108,6 +111,40 @@ assert_eq "2" "$TP_SIZE" "--tensor-parallel-size=VALUE maps to TP_SIZE"
 reset_test_state
 parse_launcher_args --foreground
 assert_eq "1" "$FOREGROUND" "--foreground boolean flag"
+
+reset_test_state
+parse_launcher_args --dtype half --enable-chunked-prefill
+assert_eq "half" "$DTYPE" "--dtype passthrough key"
+assert_eq "1" "$ENABLE_CHUNKED_PREFILL" "--enable-chunked-prefill boolean flag"
+
+reset_test_state
+parse_launcher_args \
+  --device-ids 0,1 \
+  --kv-cache-dtype fp8_e4m3 \
+  --kv-cache-memory-bytes 4G \
+  --mm-processor-kwargs '{"min_pixels":100352,"max_pixels":501760}' \
+  --limit-mm-per-prompt '{"image":20,"video":1}' \
+  --reasoning-config '{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}' \
+  --chat-template-content-format string \
+  --override-generation-config '{"temperature":0.6}' \
+  --additional-config '{"gdn_prefill_backend":"flashqla_legacy"}' \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
+  --compilation-config '{"cudagraph_mode":"PIECEWISE"}' \
+  --cpu-offload-gb 0 \
+  --disable-uvicorn-access-log
+assert_eq "0,1" "$DEVICE_IDS" "--device-ids passthrough key"
+assert_eq "fp8_e4m3" "$KV_CACHE_DTYPE" "fp8_e4m3 KV precision accepted verbatim"
+assert_eq "4G" "$KV_CACHE_MEMORY_BYTES" "--kv-cache-memory-bytes passthrough key"
+assert_eq '{"min_pixels":100352,"max_pixels":501760}' "$MM_PROCESSOR_KWARGS" "--mm-processor-kwargs passthrough key"
+assert_eq '{"image":20,"video":1}' "$MM_LIMIT_JSON" "--limit-mm-per-prompt aliases MM_LIMIT_JSON"
+assert_eq '{"reasoning_start_str":"<think>","reasoning_end_str":"</think>"}' "$REASONING_CONFIG" "--reasoning-config passthrough key"
+assert_eq "string" "$CHAT_TEMPLATE_CONTENT_FORMAT" "--chat-template-content-format passthrough key"
+assert_eq '{"temperature":0.6}' "$OVERRIDE_GENERATION_CONFIG" "--override-generation-config passthrough key"
+assert_eq '{"gdn_prefill_backend":"flashqla_legacy"}' "$ADDITIONAL_CONFIG_JSON" "--additional-config aliases ADDITIONAL_CONFIG_JSON"
+assert_eq '{"method":"mtp","num_speculative_tokens":3}' "$SPECULATIVE_CONFIG" "--speculative-config passthrough key"
+assert_eq '{"cudagraph_mode":"PIECEWISE"}' "$COMPILATION_CONFIG_JSON" "--compilation-config aliases COMPILATION_CONFIG_JSON"
+assert_eq "0" "$CPU_OFFLOAD_GB" "--cpu-offload-gb passthrough key"
+assert_eq "1" "$DISABLE_UVICORN_ACCESS_LOG" "--disable-uvicorn-access-log boolean flag"
 
 expect_failure "q8_0 is not a vLLM-style KV value" --kv-cache-dtype q8_0
 expect_failure "f16 is not a vLLM-style KV value" --kv-cache-dtype f16

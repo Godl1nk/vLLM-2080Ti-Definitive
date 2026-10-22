@@ -904,6 +904,8 @@ NON_INTERACTIVE_CONFIG_KEYS=(
   ENABLE_YARN
   ENABLE_PROMPT_TOKENS_DETAILS
   DISABLE_PREFIX_CACHING
+  SKIP_MM_PROFILING
+  LANGUAGE_MODEL_ONLY
   VLLM_ALLOW_MAMBA_SPEC_FULL_CUDAGRAPH
   VLLM_ENFORCE_STRICT_TOOL_CALLING
   MAMBA_CACHE_MODE
@@ -920,6 +922,17 @@ NON_INTERACTIVE_CONFIG_KEYS=(
   START_TIMEOUT
   MM_IMAGE_LIMIT
   MM_LIMIT_JSON
+  DTYPE
+  ENABLE_CHUNKED_PREFILL
+  DEVICE_IDS
+  KV_CACHE_MEMORY_BYTES
+  MM_PROCESSOR_KWARGS
+  REASONING_CONFIG
+  CHAT_TEMPLATE_CONTENT_FORMAT
+  OVERRIDE_GENERATION_CONFIG
+  CPU_OFFLOAD_GB
+  DISABLE_UVICORN_ACCESS_LOG
+  SPECULATIVE_CONFIG
   CUDA_HOME
   CUDA_VISIBLE_DEVICES
   CUDA_DEVICE_ORDER
@@ -939,6 +952,7 @@ NON_INTERACTIVE_BOOLEAN_KEYS=(
   SKIP_MM_PROFILING
   ENABLE_AUTO_TOOL_CHOICE
   ENABLE_PREFIX_CACHING
+  ENABLE_CHUNKED_PREFILL
   ENABLE_YARN
   ENABLE_PROMPT_TOKENS_DETAILS
   DISABLE_PREFIX_CACHING
@@ -957,6 +971,7 @@ NON_INTERACTIVE_BOOLEAN_KEYS=(
   VLLM_INT8KV_FA_PREFILL
   SPECULATIVE_DISABLE_PADDED_DRAFTER_BATCH
   SPECULATIVE_USE_LOCAL_ARGMAX_REDUCTION
+  DISABLE_UVICORN_ACCESS_LOG
 )
 
 declare -A CONFIG_FLAG_TO_KEY=()
@@ -1030,6 +1045,12 @@ init_config_registry() {
     [[ -n "$key" ]] || continue
     CONFIG_BOOLEAN_KEYS["$key"]=1
   done
+  CONFIG_FLAG_TO_KEY["--limit-mm-per-prompt"]=MM_LIMIT_JSON
+  CONFIG_FLAG_TO_KEY["--additional-config"]=ADDITIONAL_CONFIG_JSON
+  CONFIG_FLAG_TO_KEY["--compilation-config"]=COMPILATION_CONFIG_JSON
+  CONFIG_KNOWN_KEYS[MM_LIMIT_JSON]=1
+  CONFIG_KNOWN_KEYS[ADDITIONAL_CONFIG_JSON]=1
+  CONFIG_KNOWN_KEYS[COMPILATION_CONFIG_JSON]=1
   CONFIG_REGISTRY_INITIALIZED=1
 }
 
@@ -1224,9 +1245,9 @@ parse_launcher_args() {
           auto)
             value=float16
             ;;
-          float16|int8_per_token_head|fp8|turboquant_k8v4|turboquant_4bit_nc) ;;
+          float16|int8_per_token_head|fp8|fp8_e4m3|fp8_e5m2|turboquant_k8v4|turboquant_4bit_nc) ;;
           *)
-            die "Option $arg expects one of the validated KV precisions: float16, int8_per_token_head, fp8, turboquant_k8v4, turboquant_4bit_nc."
+            die "Option $arg expects one of the validated KV precisions: float16, int8_per_token_head, fp8, fp8_e4m3, fp8_e5m2, turboquant_k8v4, turboquant_4bit_nc."
             ;;
         esac
         set_config_override KV_CACHE_DTYPE "$value" cli
@@ -4781,7 +4802,7 @@ validate_speculative_route() {
   local method tokens backend json_status draft_sample_method
 
   if [[ -n "${SPECULATIVE_CONFIG:-}" ]]; then
-    if [[ -n "${SPECULATIVE_METHOD:-}" || -n "${SPECULATIVE_TOKENS:-}" || -n "${SPECULATIVE_DRAFT_TP_SIZE:-}" || -n "${SPECULATIVE_MAX_MODEL_LEN:-}" || -n "${SPECULATIVE_ATTENTION_BACKEND:-}" || -n "${SPECULATIVE_KV_CACHE_DTYPE:-}" || -n "${SPECULATIVE_DRAFT_SAMPLE_METHOD:-}" ]] || config_key_has_explicit_value SPECULATIVE_DISABLE_PADDED_DRAFTER_BATCH || config_key_has_explicit_value SPECULATIVE_USE_LOCAL_ARGMAX_REDUCTION || ([[ "${MTP_K:-0}" =~ ^[0-9]+$ ]] && (( MTP_K > 0 ))); then
+    if (( ${SPECULATIVE_CONFIG_SHORTCUT_CONFLICT:-0} )); then
       echo "ERROR: SPECULATIVE_CONFIG must not be mixed with shortcut speculative fields or MTP_K." >&2
       return 1
     fi
@@ -4886,6 +4907,20 @@ validate_speculative_route() {
 
 apply_speculative_runtime_defaults() {
   local method tokens
+
+  SPECULATIVE_CONFIG_SHORTCUT_CONFLICT=0
+  if [[ -n "${SPECULATIVE_CONFIG:-}" ]]; then
+    local shortcut_key
+    for shortcut_key in SPECULATIVE_METHOD SPECULATIVE_TOKENS SPECULATIVE_DRAFT_TP_SIZE \
+      SPECULATIVE_MAX_MODEL_LEN SPECULATIVE_ATTENTION_BACKEND SPECULATIVE_KV_CACHE_DTYPE \
+      SPECULATIVE_DRAFT_SAMPLE_METHOD SPECULATIVE_DISABLE_PADDED_DRAFTER_BATCH \
+      SPECULATIVE_USE_LOCAL_ARGMAX_REDUCTION; do
+      config_key_has_explicit_value "$shortcut_key" && SPECULATIVE_CONFIG_SHORTCUT_CONFLICT=1
+    done
+    if [[ "${MTP_K:-0}" =~ ^[0-9]+$ ]] && (( MTP_K > 0 )); then
+      SPECULATIVE_CONFIG_SHORTCUT_CONFLICT=1
+    fi
+  fi
 
   method=$(effective_speculative_method)
   case "$method" in
@@ -5089,7 +5124,7 @@ build_args() {
     --port "$PORT"
     --model "$MODEL_DIR"
     --served-model-name "$SERVED_NAME"
-    --dtype half
+    --dtype "${DTYPE:-half}"
     --tensor-parallel-size "${TP_SIZE:-2}"
     --generation-config "${GENERATION_CONFIG:-auto}"
     --gpu-memory-utilization "$GPU_UTIL"
@@ -5142,6 +5177,14 @@ build_args() {
   [[ "${ENABLE_AUTO_TOOL_CHOICE:-0}" == "1" ]] && VLLM_ARGS+=(--enable-auto-tool-choice)
   [[ -n "${ADDITIONAL_CONFIG_JSON:-}" ]] && VLLM_ARGS+=(--additional-config "$ADDITIONAL_CONFIG_JSON")
   [[ -n "${HF_OVERRIDES_JSON:-}" ]] && VLLM_ARGS+=(--hf-overrides "$HF_OVERRIDES_JSON")
+  [[ -n "${DEVICE_IDS:-}" ]] && VLLM_ARGS+=(--device-ids "$DEVICE_IDS")
+  [[ -n "${KV_CACHE_MEMORY_BYTES:-}" ]] && VLLM_ARGS+=(--kv-cache-memory-bytes "$KV_CACHE_MEMORY_BYTES")
+  [[ -n "${MM_PROCESSOR_KWARGS:-}" ]] && VLLM_ARGS+=(--mm-processor-kwargs "$MM_PROCESSOR_KWARGS")
+  [[ -n "${REASONING_CONFIG:-}" ]] && VLLM_ARGS+=(--reasoning-config "$REASONING_CONFIG")
+  [[ -n "${CHAT_TEMPLATE_CONTENT_FORMAT:-}" ]] && VLLM_ARGS+=(--chat-template-content-format "$CHAT_TEMPLATE_CONTENT_FORMAT")
+  [[ -n "${OVERRIDE_GENERATION_CONFIG:-}" ]] && VLLM_ARGS+=(--override-generation-config "$OVERRIDE_GENERATION_CONFIG")
+  [[ -n "${CPU_OFFLOAD_GB:-}" ]] && VLLM_ARGS+=(--cpu-offload-gb "$CPU_OFFLOAD_GB")
+  [[ "${DISABLE_UVICORN_ACCESS_LOG:-0}" == "1" ]] && VLLM_ARGS+=(--disable-uvicorn-access-log)
 
   if [[ -n "${MM_LIMIT_JSON:-}" ]]; then
     VLLM_ARGS+=(--limit-mm-per-prompt "$MM_LIMIT_JSON")
@@ -6757,7 +6800,7 @@ main() {
 
   mkdir -p "$LOG_DIR"
 
-  if [[ "${NON_INTERACTIVE:-0}" == "1" || "${PRINT_CONFIG:-0}" == "1" || ! -t 0 ]]; then
+  if [[ "${NON_INTERACTIVE:-0}" == "1" || "${PRINT_CONFIG:-0}" == "1" || "${FOREGROUND:-0}" == "1" || ! -t 0 ]]; then
     run_start_flow "$@"
   else
     service_manager
