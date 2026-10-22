@@ -1518,23 +1518,104 @@ apply_profile_overrides() {
   done < <(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$file" | sort -u)
 }
 
+auto_profile_hardware_dir() {
+  local gpu_count=$1
+  local gpu_list
+
+  gpu_list=$(list_nvidia_gpus 2>/dev/null || true)
+  [[ -n "$gpu_list" ]] || return 1
+  if [[ "$gpu_count" == "2" ]] &&
+     awk -F'\t' 'tolower($2) ~ /2080[[:space:]]*ti/ { matches++ } END { exit matches < 2 }' <<< "$gpu_list"; then
+    printf '2x2080Ti\n'
+    return 0
+  fi
+  if [[ "$gpu_count" == "2" ]] &&
+     awk -F'\t' 'tolower($2) ~ /t10/ { matches++ } END { exit matches < 2 }' <<< "$gpu_list"; then
+    printf '2xT10\n'
+    return 0
+  fi
+  if [[ "$gpu_count" == "4" ]] &&
+     awk -F'\t' 'tolower($2) ~ /t10/ { matches++ } END { exit matches < 4 }' <<< "$gpu_list"; then
+    printf '4xT10\n'
+    return 0
+  fi
+  return 1
+}
+
+auto_profile_file() {
+  local family quantization hardware message_type hardware_dir
+  local file best_file="" best_rank=999 best_len=-1
+  local profile_family profile_quantization profile_message_type profile_len profile_yarn profile_kv profile_method
+  local rank message_rank yarn_rank kv_rank
+
+  [[ -n "${MODEL_DIR:-}" ]] || return 1
+  family=$(guess_model_family "$MODEL_DIR" 2>/dev/null || true)
+  [[ -n "$family" ]] || return 1
+  quantization=$(guess_quantization "$MODEL_DIR")
+  hardware=$(auto_profile_hardware_dir "$(gpu_device_count "${GPU_DEVICES:-$(detect_default_gpu_devices)}")") || return 1
+  hardware_dir="$PROFILE_DIR/$hardware"
+  [[ -d "$hardware_dir" ]] || return 1
+  if model_is_multimodal "$MODEL_DIR"; then
+    message_type="text+image"
+  else
+    message_type="text-only"
+  fi
+
+  while IFS= read -r file; do
+    profile_family=$(read_profile_value "$file" MODEL_FAMILY)
+    [[ "$profile_family" == "$family" ]] || continue
+    profile_quantization=$(read_profile_value "$file" QUANTIZATION)
+    [[ "$profile_quantization" == "$quantization" ]] || continue
+    profile_len=$(read_profile_value "$file" MAX_MODEL_LEN)
+    [[ "$profile_len" =~ ^[0-9]+$ ]] || continue
+    profile_method=$(read_profile_value "$file" SPECULATIVE_METHOD)
+    [[ "$profile_method" == "dflash" ]] && continue
+    profile_message_type=$(read_profile_value "$file" MESSAGE_TYPE)
+    if [[ "$profile_message_type" == "$message_type" ]]; then
+      message_rank=0
+    else
+      message_rank=1
+    fi
+    profile_yarn=$(read_profile_value "$file" ENABLE_YARN)
+    if [[ "$profile_yarn" == "1" || "${file##*/}" == yarn-* ]]; then
+      yarn_rank=1
+    else
+      yarn_rank=0
+    fi
+    profile_kv=$(read_profile_value "$file" KV_CACHE_DTYPE)
+    case "$profile_kv" in
+      ""|fp16|fp8) kv_rank=0 ;;
+      *) kv_rank=1 ;;
+    esac
+    rank=$(( message_rank * 100 + yarn_rank * 10 + kv_rank ))
+    if (( rank < best_rank || (rank == best_rank && profile_len > best_len) )); then
+      best_rank=$rank
+      best_len=$profile_len
+      best_file=$file
+    fi
+  done < <(find "$hardware_dir" -type f -name '*.env' | sort)
+
+  [[ -n "$best_file" ]] || return 1
+  printf '%s\n' "$best_file"
+}
+
 resolve_profile_file() {
   if [[ -n "${PROFILE_FILE:-}" ]]; then
     printf '%s\n' "$PROFILE_FILE"
     return 0
   fi
-  if [[ -z "${PROFILE:-}" ]]; then
+  if [[ -n "${PROFILE:-}" ]]; then
+    if [[ -f "$PROFILE_DIR/$PROFILE" ]]; then
+      printf '%s\n' "$PROFILE_DIR/$PROFILE"
+      return 0
+    fi
+    if [[ -f "$PROFILE_DIR/${PROFILE%.env}.env" ]]; then
+      printf '%s\n' "$PROFILE_DIR/${PROFILE%.env}.env"
+      return 0
+    fi
     return 1
   fi
-  if [[ -f "$PROFILE_DIR/$PROFILE" ]]; then
-    printf '%s\n' "$PROFILE_DIR/$PROFILE"
-    return 0
-  fi
-  if [[ -f "$PROFILE_DIR/${PROFILE%.env}.env" ]]; then
-    printf '%s\n' "$PROFILE_DIR/${PROFILE%.env}.env"
-    return 0
-  fi
-  return 1
+  auto_profile_file
 }
 
 load_manager_state() {
@@ -3034,6 +3115,8 @@ current_scope_label() {
 current_profile_label() {
   if [[ -n "${PROFILE:-}" ]]; then
     echo "$PROFILE"
+  elif [[ -n "${AUTO_PROFILE_FILE:-}" ]]; then
+    echo "auto ($(basename "$AUTO_PROFILE_FILE"))"
   else
     echo "none"
   fi
@@ -4656,8 +4739,82 @@ guess_model_family() {
   esac
 }
 
+quantization_from_config() {
+  local config_file=${1%/}/config.json
+  [[ -f "$config_file" ]] || return 1
+
+  python3 - "$config_file" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as config_stream:
+        config = json.load(config_stream)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+quantization_config = config.get("quantization_config")
+if isinstance(quantization_config, dict):
+    method = str(quantization_config.get("quant_method", "")).strip().lower()
+    if method in ("compressed-tensors", "compressed_tensors"):
+        groups = quantization_config.get("config_groups") or {}
+        group_values = groups.values() if isinstance(groups, dict) else []
+        for group in group_values:
+            if not isinstance(group, dict):
+                continue
+            for scheme_name in ("weights", "input_activations"):
+                scheme = group.get(scheme_name)
+                if not isinstance(scheme, dict):
+                    continue
+                if scheme.get("num_bits") == 8:
+                    print("fp8")
+                    raise SystemExit(0)
+        print("compressed-tensors")
+        raise SystemExit(0)
+    if method:
+        print(method)
+        raise SystemExit(0)
+for key in ("compression_config", "quantization"):
+    value = config.get(key)
+    if isinstance(value, str) and value.strip():
+        print(value.strip().lower())
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+model_is_multimodal() {
+  local config_file=${1%/}/config.json
+  [[ -f "$config_file" ]] || return 1
+
+  python3 - "$config_file" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as config_stream:
+        config = json.load(config_stream)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+if isinstance(config.get("vision_config"), dict):
+    raise SystemExit(0)
+if isinstance(config.get("vision_tower"), dict):
+    raise SystemExit(0)
+if any(key in config for key in ("image_token_id", "video_token_id", "image_token_index")):
+    raise SystemExit(0)
+architectures = " ".join(str(value).lower() for value in (config.get("architectures") or []))
+if any(marker in architectures for marker in ("vl", "vision", "omni")):
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 guess_quantization() {
-  local dir=${1,,}
+  local dir_path=${1:-}
+  local dir=${dir_path,,}
+  local detected
+
   if [[ "$dir" == *fp8* ]]; then
     echo fp8
   elif [[ "$dir" == *gptq* ]]; then
@@ -4667,7 +4824,15 @@ guess_quantization() {
   elif [[ "$dir" == *quark* ]]; then
     echo quark
   else
-    echo ""
+    detected=$(quantization_from_config "$dir_path" 2>/dev/null || true)
+    case "$detected" in
+      fp8) echo fp8 ;;
+      awq) echo awq_marlin ;;
+      gptq) echo gptq_marlin ;;
+      quark) echo quark ;;
+      compressed-tensors) echo compressed-tensors ;;
+      *) echo "" ;;
+    esac
   fi
 }
 
@@ -5218,6 +5383,9 @@ build_args() {
   elif [[ -n "$spec_method" && "$spec_tokens" =~ ^[0-9]+$ ]] && (( spec_tokens > 0 )); then
     generated_speculative_config=$(build_generated_speculative_config \
       "$spec_method" "$spec_tokens" "$(effective_speculative_attention_backend)" "$(effective_speculative_use_local_argmax_reduction)" "$(effective_speculative_draft_sample_method)")
+    if [[ -z "$generated_speculative_config" ]]; then
+      die "Unable to derive speculative config (python3 is required)."
+    fi
     VLLM_ARGS+=(--speculative-config "$generated_speculative_config")
   fi
 
@@ -6324,6 +6492,9 @@ prepare_runtime_defaults() {
 collect_config_env() {
   local profile_file
   if profile_file=$(resolve_profile_file); then
+    if [[ -z "${PROFILE:-}" && -z "${PROFILE_FILE:-}" ]]; then
+      AUTO_PROFILE_FILE=$profile_file
+    fi
     apply_profile_overrides "$profile_file"
   fi
   prepare_runtime_defaults || die "Invalid runtime configuration."
@@ -6341,6 +6512,7 @@ Launch summary:
   Fork release:         v$VERSION
   Runtime identity:     $RUNTIME_IDENTITY
   Model directory:      $MODEL_DIR
+  Route profile:        $(current_profile_label)
   Draft model:          ${SPECULATIVE_MODEL:-not selected}
   Served name:          $SERVED_NAME
   Model architecture:   $MODEL_FAMILY

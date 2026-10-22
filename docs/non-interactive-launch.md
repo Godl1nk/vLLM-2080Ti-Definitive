@@ -38,6 +38,14 @@ Ctrl+C to stop. The model is an HF-format checkpoint directory
 (`config.json` + `*.safetensors`). Any launcher option (for example `--profile`,
 `--mode`, or `--gpu-devices`) passes through unchanged.
 
+When no route profile or route flags are given, the launcher auto-selects the
+validated profile for the detected GPUs, model family, and weight quantization.
+For example, an FP8 Qwen3.8 checkpoint on two RTX 2080 Ti resolves to
+`2x2080Ti/qwen27b/w8a16/mtp4-fp8kv-1x186K-text-image.env` (186K context, FP8
+KV, MTP4, TP2). Explicit flags and `--profile` take precedence. Auto-selection
+requires `nvidia-smi`; unsupported hardware falls back to the built-in
+defaults.
+
 ```bash
 ./vllm-server \
   --served-model-name qwen3.8-27b \

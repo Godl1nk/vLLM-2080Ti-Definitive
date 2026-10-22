@@ -26,6 +26,12 @@ Profile 库是验证矩阵，不代表每个文件在每台机器上都能运行
 （`config.json` + `*.safetensors`）。其他 launcher 参数（如 `--profile`、`--mode`、
 `--gpu-devices`）原样透传。
 
+未指定 route profile 或 route 参数时，launcher 会根据检测到的 GPU、模型族和权重量化
+自动选择已验证的 profile。例如双 RTX 2080 Ti 上的 FP8 Qwen3.8 会命中
+`2x2080Ti/qwen27b/w8a16/mtp4-fp8kv-1x186K-text-image.env`（186K 上下文、FP8 KV、
+MTP4、TP2）。显式 flag 和 `--profile` 优先。自动选择依赖 `nvidia-smi`；无法识别的
+硬件回退到内置默认值。
+
 ```bash
 ./vllm-server \
   --served-model-name qwen3.8-27b \

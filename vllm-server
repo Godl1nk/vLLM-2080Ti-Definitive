@@ -15,6 +15,11 @@ the service. MODEL_DIR is an HF-format checkpoint directory
 or via --model. GGUF/ggml quantized checkpoints are not supported; convert
 the weights first.
 
+With only a checkpoint path, the launcher auto-selects the validated route
+profile for the detected GPUs, model family, and weight quantization
+(2x2080Ti + Qwen3.8 FP8 -> mtp4-fp8kv-1x186K-text-image: 186K context, FP8 KV,
+MTP4, TP2). Explicit flags always override the selected profile.
+
 vLLM options (launched through the validated route below):
   --model PATH                     checkpoint directory (as an alternative to
                                    the positional MODEL_DIR)
