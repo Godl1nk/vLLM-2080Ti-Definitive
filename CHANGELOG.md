@@ -2,6 +2,17 @@
 
 This changelog tracks releases of vLLM 2080 Ti Definitive Edition separately from upstream vLLM releases.
 
+## v0.2.2-post6 - 2026-10-22
+
+Patch release on top of `v0.2.2-post5`.
+
+### `vllm-server` execs the API server directly
+
+Foreground mode now `exec`s the vLLM API server instead of forking it behind
+signal-forwarding traps, so Ctrl+C and other signals reach the server process
+itself. Server output goes to the terminal; the startup review is still written
+to `run-logs/` as a header for diagnostics.
+
 ## v0.2.2-post5 - 2026-10-22
 
 Patch release on top of `v0.2.2-post4`.
